@@ -1,0 +1,26 @@
+id: intentions-bootstrap-context
+name: Intentions Bootstrap Context
+version: 1.0.0
+category: intentions
+tags: [intentions, bootstrap, top-chats]
+
+description: |
+  Context for bootstrapping initial intentions. Includes analyses from top 3 chats
+  over the past year.
+
+flexibility: medium
+total_estimated_tokens: 450000
+
+slices:
+  - name: TOP_CHAT_ANALYSES
+    retrieval: analyses_context_data
+    params:
+      # Top 3 chats determined by caller, passed via chat_ids
+      chat_ids: ["{{top_chat_1}}", "{{top_chat_2}}", "{{top_chat_3}}"]
+      time: { preset: year }
+      include: [entities, topics, emotions, humor, commitments]
+      encode: { format: compact_json }
+    estimated_tokens: 450000
+    encoding_explainer: "Compact JSON analysis data for 3 high-volume chats over 12 months."
+    why_include: "Provides comprehensive behavioral patterns to identify recurring intentions."
+

@@ -1,0 +1,35 @@
+id: intentions-revamp-context
+name: Intentions Revamp Context
+version: 1.0.0
+category: intentions
+tags: [intentions, revamp, deep]
+
+description: |
+  Context for complete intentions architecture revision. Includes deep conversation
+  and analysis data from all top chats.
+
+flexibility: low
+total_estimated_tokens: 1800000
+
+slices:
+  - name: DEEP_CONVOS_ALL
+    retrieval: convos_context_data
+    params:
+      chat_ids: ["{{top_chat_ids}}"]  # Multiple chat IDs
+      time: { preset: all }
+      order: timeAsc
+      token_max: 1200000
+    estimated_tokens: 1200000
+    encoding_explainer: "Complete conversation history for all top chats."
+    why_include: "Comprehensive data for identifying pain points and patterns."
+    
+  - name: DEEP_ANALYSES_ALL
+    retrieval: analyses_context_data
+    params:
+      chat_ids: ["{{top_chat_ids}}"]
+      time: { preset: all }
+      token_max: 600000
+    estimated_tokens: 600000
+    encoding_explainer: "Complete analysis data for all top chats."
+    why_include: "Structured insights to strengthen evidence in intentions."
+

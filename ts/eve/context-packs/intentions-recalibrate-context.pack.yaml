@@ -1,0 +1,22 @@
+id: intentions-recalibrate-context
+name: Intentions Recalibrate Context
+version: 1.0.0
+category: intentions
+tags: [intentions, recalibrate, artifacts]
+
+description: |
+  Context for recalibrating intentions. Includes Overall Analysis artifacts
+  for top chats.
+
+flexibility: medium
+total_estimated_tokens: 200000
+
+slices:
+  - name: OVERALL_ANALYSES
+    retrieval: artifacts_context_data
+    params:
+      names: ["{{artifact_names}}"]
+    estimated_tokens: 200000
+    encoding_explainer: "Overall Analysis artifacts for top chats."
+    why_include: "Updated analyses to recalibrate intentions based on recent patterns."
+

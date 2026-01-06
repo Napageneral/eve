@@ -1,0 +1,25 @@
+id: intentions-narrative-context
+name: Intentions Narrative Context
+version: 1.0.0
+category: intentions
+tags: [intentions, narrative, single-chat]
+
+description: |
+  Context for creating narrative intentions for a specific chat. Includes
+  year-long conversation data for that chat.
+
+flexibility: low
+total_estimated_tokens: 500000
+
+slices:
+  - name: CHAT_CONVOS_YEAR
+    retrieval: convos_context_data
+    params:
+      chat_ids: ["{{source_chat}}"]
+      time: { preset: year }
+      order: timeAsc
+      token_max: 500000
+    estimated_tokens: 500000
+    encoding_explainer: "Full conversation messages over the past year for the target chat."
+    why_include: "Provides complete message history to identify specific recurring patterns."
+

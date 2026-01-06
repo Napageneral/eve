@@ -1,0 +1,46 @@
+# Context Engine Configuration
+
+safety_factors:
+  claude-sonnet-4: 0.90
+  claude-sonnet-3-5: 0.90
+  claude-haiku-3-5: 0.92
+  gpt-4o: 0.88
+  gpt-4o-mini: 0.90
+  default: 0.90
+
+category_defaults:
+  personality-insights:
+    - shrink_time:
+        schedule: [year, six_months, quarter, month]
+    - compress_encoding:
+        from: compact_json
+        to: ultra_compact
+    - drop_candidates:
+        slices: [optional_context]
+
+  intelligence:
+    - shrink_time:
+        schedule: [month, two_weeks]
+    - drop_candidates:
+        slices: [history]
+
+  fun:
+    - shrink_time:
+        schedule: [year, six_months, quarter, month]
+    - drop_candidates:
+        slices: [secondary_data]
+
+  analysis:
+    - shrink_time:
+        schedule: [all, year, six_months, quarter]
+    - compress_encoding:
+        from: verbose
+        to: compact
+
+  default:
+    - shrink_time:
+        schedule: [year, six_months, quarter, month]
+    - compress_encoding:
+        from: verbose
+        to: compact
+

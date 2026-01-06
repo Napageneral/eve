@@ -1,0 +1,253 @@
+2024-08-30 17:01:47,363 - INFO - Tables in the backup database:
+2024-08-30 17:01:47,363 - INFO - - _SqliteDatabaseProperties
+2024-08-30 17:01:47,363 - INFO - - deleted_messages
+2024-08-30 17:01:47,363 - INFO - - sqlite_sequence
+2024-08-30 17:01:47,363 - INFO - - chat_handle_join
+2024-08-30 17:01:47,363 - INFO - - sync_deleted_messages
+2024-08-30 17:01:47,363 - INFO - - message_processing_task
+2024-08-30 17:01:47,363 - INFO - - handle
+2024-08-30 17:01:47,363 - INFO - - sync_deleted_chats
+2024-08-30 17:01:47,363 - INFO - - message_attachment_join
+2024-08-30 17:01:47,363 - INFO - - sync_deleted_attachments
+2024-08-30 17:01:47,363 - INFO - - kvtable
+2024-08-30 17:01:47,363 - INFO - - chat_message_join
+2024-08-30 17:01:47,363 - INFO - - message
+2024-08-30 17:01:47,363 - INFO - - chat
+2024-08-30 17:01:47,363 - INFO - - attachment
+2024-08-30 17:01:47,363 - INFO - - chat_recoverable_message_join
+2024-08-30 17:01:47,363 - INFO - - unsynced_removed_recoverable_messages
+2024-08-30 17:01:47,363 - INFO - - recoverable_message_part
+2024-08-30 17:01:47,363 - INFO - - sqlite_stat1
+2024-08-30 17:01:47,364 - INFO - 
+Schema for table '_SqliteDatabaseProperties':
+2024-08-30 17:01:47,364 - INFO -   key (TEXT)
+2024-08-30 17:01:47,364 - INFO -   value (TEXT)
+2024-08-30 17:01:47,365 - INFO - 
+Schema for table 'deleted_messages':
+2024-08-30 17:01:47,365 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,365 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,366 - INFO - 
+Schema for table 'sqlite_sequence':
+2024-08-30 17:01:47,366 - INFO -   name ()
+2024-08-30 17:01:47,366 - INFO -   seq ()
+2024-08-30 17:01:47,366 - INFO - 
+Schema for table 'chat_handle_join':
+2024-08-30 17:01:47,366 - INFO -   chat_id (INTEGER)
+2024-08-30 17:01:47,366 - INFO -   handle_id (INTEGER)
+2024-08-30 17:01:47,367 - INFO - 
+Schema for table 'sync_deleted_messages':
+2024-08-30 17:01:47,367 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,367 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,367 - INFO -   recordID (TEXT)
+2024-08-30 17:01:47,368 - INFO - 
+Schema for table 'message_processing_task':
+2024-08-30 17:01:47,368 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,368 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,368 - INFO -   task_flags (INTEGER)
+2024-08-30 17:01:47,369 - INFO - 
+Schema for table 'handle':
+2024-08-30 17:01:47,369 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,369 - INFO -   id (TEXT)
+2024-08-30 17:01:47,369 - INFO -   country (TEXT)
+2024-08-30 17:01:47,369 - INFO -   service (TEXT)
+2024-08-30 17:01:47,369 - INFO -   uncanonicalized_id (TEXT)
+2024-08-30 17:01:47,369 - INFO -   person_centric_id (TEXT)
+2024-08-30 17:01:47,370 - INFO - 
+Schema for table 'sync_deleted_chats':
+2024-08-30 17:01:47,370 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,370 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,370 - INFO -   recordID (TEXT)
+2024-08-30 17:01:47,370 - INFO -   timestamp (INTEGER)
+2024-08-30 17:01:47,370 - INFO - 
+Schema for table 'message_attachment_join':
+2024-08-30 17:01:47,370 - INFO -   message_id (INTEGER)
+2024-08-30 17:01:47,370 - INFO -   attachment_id (INTEGER)
+2024-08-30 17:01:47,371 - INFO - 
+Schema for table 'sync_deleted_attachments':
+2024-08-30 17:01:47,371 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,371 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,371 - INFO -   recordID (TEXT)
+2024-08-30 17:01:47,372 - INFO - 
+Schema for table 'kvtable':
+2024-08-30 17:01:47,372 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,372 - INFO -   key (TEXT)
+2024-08-30 17:01:47,372 - INFO -   value (BLOB)
+2024-08-30 17:01:47,373 - INFO - 
+Schema for table 'chat_message_join':
+2024-08-30 17:01:47,373 - INFO -   chat_id (INTEGER)
+2024-08-30 17:01:47,373 - INFO -   message_id (INTEGER)
+2024-08-30 17:01:47,373 - INFO -   message_date (INTEGER)
+2024-08-30 17:01:47,374 - INFO - 
+Schema for table 'message':
+2024-08-30 17:01:47,374 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,374 - INFO -   text (TEXT)
+2024-08-30 17:01:47,374 - INFO -   replace (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   service_center (TEXT)
+2024-08-30 17:01:47,374 - INFO -   handle_id (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   subject (TEXT)
+2024-08-30 17:01:47,374 - INFO -   country (TEXT)
+2024-08-30 17:01:47,374 - INFO -   attributedBody (BLOB)
+2024-08-30 17:01:47,374 - INFO -   version (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   type (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   service (TEXT)
+2024-08-30 17:01:47,374 - INFO -   account (TEXT)
+2024-08-30 17:01:47,374 - INFO -   account_guid (TEXT)
+2024-08-30 17:01:47,374 - INFO -   error (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   date (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   date_read (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   date_delivered (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_delivered (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_finished (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_emote (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_from_me (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_empty (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_delayed (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_auto_reply (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_prepared (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_read (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_system_message (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_sent (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   has_dd_results (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_service_message (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_forward (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   was_downgraded (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_archive (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   cache_has_attachments (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   cache_roomnames (TEXT)
+2024-08-30 17:01:47,374 - INFO -   was_data_detected (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   was_deduplicated (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_audio_message (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_played (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   date_played (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   item_type (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   other_handle (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   group_title (TEXT)
+2024-08-30 17:01:47,374 - INFO -   group_action_type (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   share_status (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   share_direction (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_expirable (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   expire_state (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   message_action_type (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   message_source (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   associated_message_guid (TEXT)
+2024-08-30 17:01:47,374 - INFO -   associated_message_type (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   balloon_bundle_id (TEXT)
+2024-08-30 17:01:47,374 - INFO -   payload_data (BLOB)
+2024-08-30 17:01:47,374 - INFO -   expressive_send_style_id (TEXT)
+2024-08-30 17:01:47,374 - INFO -   associated_message_range_location (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   associated_message_range_length (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   time_expressive_send_played (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   message_summary_info (BLOB)
+2024-08-30 17:01:47,374 - INFO -   ck_sync_state (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   ck_record_id (TEXT)
+2024-08-30 17:01:47,374 - INFO -   ck_record_change_tag (TEXT)
+2024-08-30 17:01:47,374 - INFO -   destination_caller_id (TEXT)
+2024-08-30 17:01:47,374 - INFO -   sr_ck_sync_state (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   sr_ck_record_id (TEXT)
+2024-08-30 17:01:47,374 - INFO -   sr_ck_record_change_tag (TEXT)
+2024-08-30 17:01:47,374 - INFO -   is_corrupt (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   reply_to_guid (TEXT)
+2024-08-30 17:01:47,374 - INFO -   sort_id (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_spam (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   has_unseen_mention (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   thread_originator_guid (TEXT)
+2024-08-30 17:01:47,374 - INFO -   thread_originator_part (TEXT)
+2024-08-30 17:01:47,374 - INFO -   syndication_ranges (TEXT)
+2024-08-30 17:01:47,374 - INFO -   was_delivered_quietly (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   did_notify_recipient (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   synced_syndication_ranges (TEXT)
+2024-08-30 17:01:47,374 - INFO -   date_retracted (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   date_edited (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   was_detonated (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   part_count (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_stewie (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_kt_verified (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_sos (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   is_critical (INTEGER)
+2024-08-30 17:01:47,374 - INFO -   bia_reference_id (TEXT)
+2024-08-30 17:01:47,374 - INFO -   fallback_hash (TEXT)
+2024-08-30 17:01:47,375 - INFO - 
+Schema for table 'chat':
+2024-08-30 17:01:47,375 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,375 - INFO -   style (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   state (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   account_id (TEXT)
+2024-08-30 17:01:47,375 - INFO -   properties (BLOB)
+2024-08-30 17:01:47,375 - INFO -   chat_identifier (TEXT)
+2024-08-30 17:01:47,375 - INFO -   service_name (TEXT)
+2024-08-30 17:01:47,375 - INFO -   room_name (TEXT)
+2024-08-30 17:01:47,375 - INFO -   account_login (TEXT)
+2024-08-30 17:01:47,375 - INFO -   is_archived (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   last_addressed_handle (TEXT)
+2024-08-30 17:01:47,375 - INFO -   display_name (TEXT)
+2024-08-30 17:01:47,375 - INFO -   group_id (TEXT)
+2024-08-30 17:01:47,375 - INFO -   is_filtered (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   successful_query (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   engram_id (TEXT)
+2024-08-30 17:01:47,375 - INFO -   server_change_token (TEXT)
+2024-08-30 17:01:47,375 - INFO -   ck_sync_state (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   original_group_id (TEXT)
+2024-08-30 17:01:47,375 - INFO -   last_read_message_timestamp (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   sr_server_change_token (TEXT)
+2024-08-30 17:01:47,375 - INFO -   sr_ck_sync_state (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   cloudkit_record_id (TEXT)
+2024-08-30 17:01:47,375 - INFO -   sr_cloudkit_record_id (TEXT)
+2024-08-30 17:01:47,375 - INFO -   last_addressed_sim_id (TEXT)
+2024-08-30 17:01:47,375 - INFO -   is_blackholed (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   syndication_date (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   syndication_type (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   is_recovered (INTEGER)
+2024-08-30 17:01:47,375 - INFO -   is_deleting_incoming_messages (INTEGER)
+2024-08-30 17:01:47,376 - INFO - 
+Schema for table 'attachment':
+2024-08-30 17:01:47,376 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   guid (TEXT)
+2024-08-30 17:01:47,376 - INFO -   created_date (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   start_date (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   filename (TEXT)
+2024-08-30 17:01:47,376 - INFO -   uti (TEXT)
+2024-08-30 17:01:47,376 - INFO -   mime_type (TEXT)
+2024-08-30 17:01:47,376 - INFO -   transfer_state (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   is_outgoing (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   user_info (BLOB)
+2024-08-30 17:01:47,376 - INFO -   transfer_name (TEXT)
+2024-08-30 17:01:47,376 - INFO -   total_bytes (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   is_sticker (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   sticker_user_info (BLOB)
+2024-08-30 17:01:47,376 - INFO -   attribution_info (BLOB)
+2024-08-30 17:01:47,376 - INFO -   hide_attachment (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   ck_sync_state (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   ck_server_change_token_blob (BLOB)
+2024-08-30 17:01:47,376 - INFO -   ck_record_id (TEXT)
+2024-08-30 17:01:47,376 - INFO -   original_guid (TEXT)
+2024-08-30 17:01:47,376 - INFO -   sr_ck_sync_state (INTEGER)
+2024-08-30 17:01:47,376 - INFO -   sr_ck_server_change_token_blob (BLOB)
+2024-08-30 17:01:47,376 - INFO -   sr_ck_record_id (TEXT)
+2024-08-30 17:01:47,376 - INFO -   is_commsafety_sensitive (INTEGER)
+2024-08-30 17:01:47,377 - INFO - 
+Schema for table 'chat_recoverable_message_join':
+2024-08-30 17:01:47,377 - INFO -   chat_id (INTEGER)
+2024-08-30 17:01:47,377 - INFO -   message_id (INTEGER)
+2024-08-30 17:01:47,377 - INFO -   delete_date (INTEGER)
+2024-08-30 17:01:47,377 - INFO -   ck_sync_state (INTEGER)
+2024-08-30 17:01:47,378 - INFO - 
+Schema for table 'unsynced_removed_recoverable_messages':
+2024-08-30 17:01:47,378 - INFO -   ROWID (INTEGER)
+2024-08-30 17:01:47,378 - INFO -   chat_guid (TEXT)
+2024-08-30 17:01:47,378 - INFO -   message_guid (TEXT)
+2024-08-30 17:01:47,378 - INFO -   part_index (INTEGER)
+2024-08-30 17:01:47,379 - INFO - 
+Schema for table 'recoverable_message_part':
+2024-08-30 17:01:47,379 - INFO -   chat_id (INTEGER)
+2024-08-30 17:01:47,379 - INFO -   message_id (INTEGER)
+2024-08-30 17:01:47,379 - INFO -   part_index (INTEGER)
+2024-08-30 17:01:47,379 - INFO -   delete_date (INTEGER)
+2024-08-30 17:01:47,379 - INFO -   part_text (BLOB)
+2024-08-30 17:01:47,379 - INFO -   ck_sync_state (INTEGER)
+2024-08-30 17:01:47,380 - INFO - 
+Schema for table 'sqlite_stat1':
+2024-08-30 17:01:47,380 - INFO -   tbl ()
+2024-08-30 17:01:47,380 - INFO -   idx ()
+2024-08-30 17:01:47,380 - INFO -   stat ()

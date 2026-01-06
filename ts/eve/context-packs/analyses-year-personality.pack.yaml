@@ -1,0 +1,25 @@
+id: analyses-year-personality
+name: 1 Year Personality Analysis
+version: 1.0.0
+category: personality-insights
+tags: [analyses, long-range, personality]
+
+description: |
+  Year-long compact analysis for personality & style inference.
+
+flexibility: medium
+total_estimated_tokens: 150000
+
+slices:
+  - name: ANALYSES_YEAR
+    retrieval: analyses_context_data
+    params:
+      chat_ids: ["{{source_chat}}"]
+      time: { preset: year }
+      include: [entities, topics, emotions, humor]
+      encode: { format: compact_json }
+    estimated_tokens: 150000
+    encoding_explainer: auto
+    why_include: |
+      Long coverage reduces recency bias; reveals stable communication patterns.
+

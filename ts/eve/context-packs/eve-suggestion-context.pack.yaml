@@ -1,0 +1,58 @@
+id: eve-suggestion-context
+name: Eve Suggestion Context
+version: 1.0.0
+category: intelligence
+tags: [suggestions, mixed-slices]
+
+description: |
+  Multi-slice context for Eve's suggestion generation.
+
+flexibility: low
+total_estimated_tokens: 22000
+
+slices:
+  - name: CURRENT_TURN
+    retrieval: current_messages
+    params:
+      limit: 5
+    estimated_tokens: 500
+    encoding_explainer: "Plain text lines; newest last."
+    why_include: "Immediate situational awareness for context-relevant suggestions."
+
+  - name: SHORT_RANGE
+    retrieval: convos_context_data
+    params:
+      chat_ids: ["{{source_chat}}"]
+      limits: { conversations: 3 }
+      encode: { format: message_ids }
+    estimated_tokens: 5000
+    encoding_explainer: "Message ID lists by recent conversation windows."
+    why_include: "Short-term patterns and topics to ground suggestions in recent context."
+
+  - name: DIGEST_30D
+    retrieval: analyses_context_data
+    params:
+      chat_ids: ["{{source_chat}}"]
+      time: { preset: month }
+      encode: { format: compact_json }
+    estimated_tokens: 10000
+    encoding_explainer: "30-day compact analysis JSON."
+    why_include: "Recent broader context for understanding dynamics and patterns."
+
+  - name: ARTIFACTS
+    retrieval: artifacts_context_data
+    params:
+      names: ["Eve Intentions", "{{chat_title}} : Overall Analysis"]
+    estimated_tokens: 5000
+    encoding_explainer: "Markdown/JSON fragments from named artifacts."
+    why_include: "Align suggestions with user goals (intentions) and known chat dynamics."
+
+  - name: HISTORY
+    retrieval: suggestion_history
+    params:
+      chat_id: "{{source_chat}}"
+      limit: 20
+    estimated_tokens: 1500
+    encoding_explainer: "Past suggestion JSON entries."
+    why_include: "Avoid repetition; encourage variety in suggestions."
+

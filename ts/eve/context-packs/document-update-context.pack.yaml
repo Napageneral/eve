@@ -1,0 +1,17 @@
+id: document-update-context
+name: Document Update Context
+version: 1.0.0
+category: documents
+tags: [update, edit, context]
+
+description: |
+  Context for updating existing documents. Contains the current document content
+  provided via variables, no external retrieval needed.
+
+flexibility: high
+total_estimated_tokens: 0
+
+slices: []
+
+# No slices - current content passed via vars
+

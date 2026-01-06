@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+.venv/
+venv/
+
+# Node/Bun
+node_modules/
+
+# Build output
+/dist/
+/build/
+
+# Databases / runtime state
+central.db
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Editor
+.vscode/
+.idea/

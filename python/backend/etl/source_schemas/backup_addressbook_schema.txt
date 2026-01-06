@@ -1,0 +1,268 @@
+Table: _SqliteDatabaseProperties
+  Column: key, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: value, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonSearchKey
+  Column: person_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: SearchKey, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: NameOnlySearchKey, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABGroupMembers
+  Column: UID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: group_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: member_type, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: member_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABMultiValue
+  Column: UID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: record_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: property, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: identifier, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: label, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: value, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 1, Default: ab_generate_guid(), Primary Key: 0
+
+Table: ABMultiValueLabel
+  Column: value, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABMultiValueEntry
+  Column: parent_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: key, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: value, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABMultiValueEntryKey
+  Column: value, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPhoneLastFour
+  Column: multivalue_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: value, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonMultiValueDeletes
+  Column: record_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: property_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: identifier, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: sequence_number, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: record_uid, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: identifier_uid, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ClientCursor
+  Column: ROWID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: store_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: latest_consumed_sequence_number, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: latest_consumed_timestamp, Type: REAL, Not Null: 0, Default: None, Primary Key: 0
+  Column: client_identifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: sqlite_sequence
+  Column: name, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: seq, Type: , Not Null: 0, Default: None, Primary Key: 0
+
+Table: ClientSequence
+  Column: sequence_number, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: client_identifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: save_timestamp, Type: REAL, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ClientCursorConsumed
+  Column: store_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: consumed_entity_class, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: consumed_entity_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: consumed_change_id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: sequence_number, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: client_identifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABStore
+  Column: ROWID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: Name, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Type, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: ConstraintsPath, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalModificationTag, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalSyncTag, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: StoreInternalIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: AccountID, Type: INTEGER, Not Null: 0, Default: -1, Primary Key: 0
+  Column: Enabled, Type: INTEGER, Not Null: 0, Default: 1, Primary Key: 0
+  Column: SyncData, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: MeIdentifier, Type: INTEGER, Not Null: 0, Default: -1, Primary Key: 0
+  Column: Capabilities, Type: INTEGER, Not Null: 0, Default: 0, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 1, Default: ab_generate_guid(), Primary Key: 0
+  Column: LastSyncDate, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ProviderIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ProviderMetadata, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABAccount
+  Column: ROWID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: AccountIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Flags, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: DefaultSourceID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 1, Default: ab_generate_guid(), Primary Key: 0
+
+Table: ABGroup
+  Column: ROWID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: Name, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: StoreID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalModificationTag, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalRepresentation, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalUUID, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 1, Default: ab_generate_guid(), Primary Key: 0
+
+Table: ABGroupChanges
+  Column: record, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: type, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: sequence_number, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: StoreID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPerson
+  Column: ROWID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: First, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Last, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Middle, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: FirstPhonetic, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: MiddlePhonetic, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: LastPhonetic, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Organization, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Department, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Note, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Kind, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: Birthday, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: JobTitle, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Nickname, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Prefix, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Suffix, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: FirstSort, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: LastSort, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: CreationDate, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: ModificationDate, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: CompositeNameFallback, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalModificationTag, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalUUID, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: StoreID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: DisplayName, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalRepresentation, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: FirstSortSection, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: LastSortSection, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: FirstSortLanguageIndex, Type: INTEGER, Not Null: 0, Default: 2147483647, Primary Key: 0
+  Column: LastSortLanguageIndex, Type: INTEGER, Not Null: 0, Default: 2147483647, Primary Key: 0
+  Column: PersonLink, Type: INTEGER, Not Null: 0, Default: -1, Primary Key: 0
+  Column: ImageURI, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: IsPreferredName, Type: INTEGER, Not Null: 0, Default: 1, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 1, Default: ab_generate_guid(), Primary Key: 0
+  Column: PhonemeData, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: AlternateBirthday, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: MapsData, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: FirstPronunciation, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: MiddlePronunciation, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: LastPronunciation, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: OrganizationPhonetic, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: OrganizationPronunciation, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: PreviousFamilyName, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: PreferredLikenessSource, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: PreferredPersonaIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: PreferredChannel, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: DowntimeWhitelist, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ImageType, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: ImageHash, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: MemojiMetadata, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: Wallpaper, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: DisplayFlags, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: WatchWallpaperImageData, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: WallpaperMetadata, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: ImageBackgroundColorsData, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: SensitiveContentConfiguration, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+  Column: WallpaperURI, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonChanges
+  Column: record, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: type, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: sequence_number, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: Image, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: ExternalIdentifier, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: StoreID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: PersonLink, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Changes, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: LinkToPersonUUID, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: PersonLinkUUID, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonLink
+  Column: ROWID, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: PreferredImagePersonID, Type: INTEGER, Not Null: 0, Default: -1, Primary Key: 0
+  Column: PreferredNamePersonID, Type: INTEGER, Not Null: 0, Default: -1, Primary Key: 0
+  Column: guid, Type: TEXT, Not Null: 1, Default: ab_generate_guid(), Primary Key: 0
+
+Table: FirstSortSectionCount
+  Column: LanguageIndex, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: Section, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: StoreID, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: number, Type: , Not Null: 0, Default: None, Primary Key: 0
+
+Table: LastSortSectionCount
+  Column: LanguageIndex, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: Section, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: StoreID, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: number, Type: , Not Null: 0, Default: None, Primary Key: 0
+
+Table: FirstSortSectionCountTotal
+  Column: LanguageIndex, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: Section, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Type, Type: INT, Not Null: 0, Default: None, Primary Key: 0
+  Column: number, Type: , Not Null: 0, Default: None, Primary Key: 0
+
+Table: LastSortSectionCountTotal
+  Column: LanguageIndex, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: Section, Type: TEXT, Not Null: 0, Default: None, Primary Key: 0
+  Column: Type, Type: INT, Not Null: 0, Default: None, Primary Key: 0
+  Column: number, Type: , Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonFullTextSearch_content
+  Column: docid, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: c0First, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c1Last, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c2Middle, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c3FirstPhonetic, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c4MiddlePhonetic, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c5LastPhonetic, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c6Organization, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c7OrganizationPhonetic, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c8Department, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c9Note, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c10Birthday, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c11JobTitle, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c12Nickname, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c13Prefix, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c14Suffix, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c15DisplayName, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c16Phone, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c17Email, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c18Address, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c19SocialProfile, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c20URL, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c21RelatedNames, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c22IM, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c23Date, Type: , Not Null: 0, Default: None, Primary Key: 0
+  Column: c24SupplementalCompositeNameTerms, Type: , Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonFullTextSearch_segments
+  Column: blockid, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: block, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonFullTextSearch_segdir
+  Column: level, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: idx, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 2
+  Column: start_block, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: leaves_end_block, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: end_block, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 0
+  Column: root, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonFullTextSearch_docsize
+  Column: docid, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: size, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+
+Table: ABPersonFullTextSearch_stat
+  Column: id, Type: INTEGER, Not Null: 0, Default: None, Primary Key: 1
+  Column: value, Type: BLOB, Not Null: 0, Default: None, Primary Key: 0
+
+2024-09-02 10:32:03,839 - ERROR - SQLite error: unknown tokenizer: ab_cf_tokenizer
+2024-09-02 10:32:03,839 - ERROR - Could not retrieve schema for table ABPersonFullTextSearch
