@@ -111,7 +111,9 @@ def trigger_analysis_pass(conversation_id: int, chat_id: int, pass_name: str):
         return None
     
     # Import here to avoid circular dependency
-    from backend.celery_service.tasks.analyze_conversation import analyze_conversation_task
+    from celery import chain as _chain
+    import time as _time
+    from backend.celery_service.app import get_celery_app
     from backend.db.session_manager import new_session
     from backend.repositories.conversation_analysis import ConversationAnalysisRepository
     
@@ -171,16 +173,27 @@ def trigger_analysis_pass(conversation_id: int, chat_id: int, pass_name: str):
         logger.error("[CA.TRIGGER] Cannot enqueue analysis (celery unavailable) pass=%s convo_id=%s", pass_name, conversation_id)
         return None
     
-    # Use the registered task function with correct parameter names
+    # Use the two-stage CA tasks: network-heavy LLM call (analysis queue) → DB persist (db queue)
     try:
-        result = analyze_conversation_task.delay(
-            conversation_id,
-            chat_id,
-            ca_row_id,
-            prompt_name=config["prompt_name"],
-            prompt_version=config["prompt_version"],
-            prompt_category=config["prompt_category"]
-        )
+        app = get_celery_app()
+        sig_call = app.signature(
+            "celery.ca.call_llm",
+            args=[
+                conversation_id,
+                chat_id,
+                ca_row_id,
+                None,  # encoded_text
+                _time.time(),  # queued_at_ts (for queue lag metrics)
+            ],
+            kwargs={
+                "prompt_name": config["prompt_name"],
+                "prompt_version": config["prompt_version"],
+                "prompt_category": config["prompt_category"],
+            },
+        ).set(queue="chatstats-analysis")
+        sig_persist = app.signature("celery.ca.persist").set(queue="chatstats-db")
+        workflow = _chain(sig_call, sig_persist)
+        result = workflow.apply_async()
         logger.info(
             "[CA.TRIGGER] enqueued pass=%s convo_id=%s task_id=%s",
             pass_name,

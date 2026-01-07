@@ -162,6 +162,24 @@ class _BulkDBFlusher:
                         conversation_analysis_row_id=ca_id,
                         eve_prompt_id=payload.get("eve_prompt_id"),  # Track Eve prompt ID
                     )
+
+                    # After analysis is persisted, enqueue embeddings for both:
+                    # - full conversation (encoded)
+                    # - analysis-derived facets (summary/topics/entities/emotions/humor)
+                    #
+                    # NOTE: This runs inside the DB worker. The embed tasks themselves are routed
+                    # to the embeddings queue (gevent workers) so we avoid blocking the writer.
+                    try:
+                        from backend.celery_service.tasks.embeddings import (
+                            embed_conversation_task,
+                            embed_analyses_for_conversation_task,
+                        )
+                        convo_id = int(payload["convo_id"])
+                        chat_id = int(payload["chat_id"])
+                        embed_conversation_task.delay(convo_id, chat_id, None)
+                        embed_analyses_for_conversation_task.delay(convo_id, chat_id, run_id=run_id)
+                    except Exception:
+                        _log.debug("[DBBulkFlusher] Failed to enqueue embeddings tasks", exc_info=True)
                 except Exception as e:
                     _msg = str(e).lower()
                     # Transient SQLite lock – requeue and retry shortly

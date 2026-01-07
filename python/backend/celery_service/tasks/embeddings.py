@@ -511,10 +511,29 @@ def maybe_rebuild_faiss_index_task(self):
 # ---------------------------------------------------------------------------
 
 @shared_task(bind=True, name="celery.embed_conversation", base=BaseTaskWithDLQ, ignore_result=True)
-def embed_conversation_task(self, conversation_id: int, chat_id: int, encoded_text: str, user_id: Optional[str] = None):
-    """Embed a single conversation using the encoded text used for analysis."""
+def embed_conversation_task(
+    self,
+    conversation_id: int,
+    chat_id: int,
+    encoded_text: Optional[str] = None,
+    user_id: Optional[str] = None,
+):
+    """Embed a single conversation.
+
+    Prefer passing `encoded_text` to avoid an extra encode call, but if omitted we
+    will fetch it via the Eve encoding endpoint (Context Engine).
+    """
     try:
         text_val = (encoded_text or "").strip()
+        if not text_val:
+            try:
+                from backend.services.eve.client import get_eve_client
+                eve = get_eve_client()
+                data = eve.encode_conversation(int(conversation_id), int(chat_id))
+                text_val = (data.get("encoded_text") or "").strip()
+            except Exception as e:
+                logger.error("[embeddings] embed_conversation_task failed to fetch encoded text: %s", e, exc_info=True)
+                raise
         logger.info("[embeddings] embed_conversation_task start | convo=%s chat=%s len=%s", conversation_id, chat_id, len(text_val))
         if not text_val:
             return {"ok": True, "count": 0}
