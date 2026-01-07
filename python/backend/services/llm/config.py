@@ -62,13 +62,15 @@ def _build_shared_httpx_clients():
 def configure_litellm():
     """Configure LiteLLM with API keys and settings"""
     # Set API keys from environment or existing constants
-    litellm.openai_key = os.getenv("OPENAI_API_KEY", "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")
-    litellm.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "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")
-    litellm.xai_key = os.getenv("XAI_API_KEY", "xai-bGDJ6Vcouj300wzHK1vE867jjbd4htx0dgiMOk7H9dVwVFVYy6QsL9Y7f9l6lQ4bn432tcBIm3E6VgzF")
-    os.environ["XAI_API_KEY"] = "xai-bGDJ6Vcouj300wzHK1vE867jjbd4htx0dgiMOk7H9dVwVFVYy6QsL9Y7f9l6lQ4bn432tcBIm3E6VgzF"
-    # LiteLLM expects GEMINI_API_KEY environment variable
-    gemini_key = os.getenv("GEMINI_API_KEY", "AIzaSyAghRtaqr6kSMwXzlJmv3vAgGqlMvFlQ6s")
-    os.environ["GEMINI_API_KEY"] = gemini_key
+    # NEVER ship default API keys in repo. Everything is env-driven.
+    litellm.openai_key = os.getenv("OPENAI_API_KEY")
+    litellm.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    litellm.xai_key = os.getenv("XAI_API_KEY")
+
+    # LiteLLM expects GEMINI_API_KEY. Accept common alternates.
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
+    if gemini_key:
+        os.environ["GEMINI_API_KEY"] = gemini_key
     
 
     # Wire shared HTTPX clients

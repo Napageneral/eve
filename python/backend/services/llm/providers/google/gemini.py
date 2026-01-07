@@ -122,7 +122,7 @@ def create_gemini_completion(
     generationConfig so Gemini returns structured JSON matching that schema.
     """
     # 1) Get your Google Generative AI key from environment
-    api_key = os.environ.get("GEMINI_API_KEY", "AIzaSyAghRtaqr6kSMwXzlJmv3vAgGqlMvFlQ6s")
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY")
     if not api_key:
         raise ValueError("No GEMINI_API_KEY found in environment.")
 
@@ -328,7 +328,7 @@ def create_gemini_multimodal_completion(
         A dictionary containing the response with both text content and image URLs
     """
     # 1) Get your Google Generative AI key from environment
-    api_key = os.environ.get("GEMINI_API_KEY", "AIzaSyAghRtaqr6kSMwXzlJmv3vAgGqlMvFlQ6s")
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY")
     if not api_key:
         raise ValueError("No GEMINI_API_KEY found in environment.")
 
@@ -518,7 +518,7 @@ def count_tokens_gemini(content: str, model: str = "google/gemini-2.5-pro-previe
     print(f"[GEMINI] Cache miss, counting tokens for content length: {len(content)} chars")
     
     # Prepare the API request
-    api_key = os.environ.get("GEMINI_API_KEY", "AIzaSyAghRtaqr6kSMwXzlJmv3vAgGqlMvFlQ6s")
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY")
     if not api_key:
         print("[GEMINI] Error: No GEMINI_API_KEY found in environment")
         raise ValueError("No GEMINI_API_KEY found in environment.")
