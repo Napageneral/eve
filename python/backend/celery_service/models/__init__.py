@@ -1,1 +1,0 @@
-# Celery models package 
