@@ -775,12 +775,17 @@ def cmd_compute_status(args: argparse.Namespace) -> int:
     _ensure_python_path()
     _set_env_from_args(args)
 
+    redis_port = int(args.redis_port)
+    context_port = int(args.context_port)
+
+    # Ensure any imports that read settings pick up the port we are checking.
+    broker_url = f"redis://127.0.0.1:{redis_port}/0"
+    os.environ["EVE_REDIS_URL"] = broker_url
+    os.environ.setdefault("CHATSTATS_REDIS_URL", broker_url)
+
     from backend.config import settings  # type: ignore
     app_dir = Path(settings.app_dir)
     run_dir = _run_dir(app_dir)
-
-    redis_port = int(args.redis_port)
-    context_port = int(args.context_port)
 
     status: dict[str, Any] = {"run_dir": str(run_dir), "redis_port": redis_port, "context_port": context_port}
 
@@ -806,6 +811,26 @@ def cmd_compute_status(args: argparse.Namespace) -> int:
 
     base_url = f"http://127.0.0.1:{context_port}"
     status["context_engine_health"] = {"url": f"{base_url}/health", **_doctor_check_http_ok(f"{base_url}/health", timeout_s=1.0)}
+
+    # Celery control ping (no result backend required). This validates broker + workers wiring.
+    status["celery_ping"] = {"ok": False, "count": 0, "workers": []}
+    try:
+        # Ensure Celery uses the same broker we are checking.
+        broker_url = f"redis://127.0.0.1:{redis_port}/0"
+        os.environ["EVE_REDIS_URL"] = broker_url
+        os.environ.setdefault("CHATSTATS_REDIS_URL", broker_url)
+
+        from backend.celery_service.app import get_celery_app  # type: ignore
+
+        app = get_celery_app()
+        replies = app.control.ping(timeout=1.0) or []
+        workers: list[str] = []
+        for r in replies:
+            if isinstance(r, dict):
+                workers.extend(list(r.keys()))
+        status["celery_ping"] = {"ok": len(workers) > 0, "count": len(workers), "workers": workers}
+    except Exception as e:
+        status["celery_ping"] = {"ok": False, "error": str(e)}
 
     _print_json({"ok": True, "status": status}, pretty=getattr(args, "pretty", False))
     return 0

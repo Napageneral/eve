@@ -30,7 +30,7 @@ py-install:
 	@.venv/bin/python -m pip install -r python/requirements-cli.txt
 
 py-test: py-install
-	@.venv/bin/python -m unittest -v python/tests/test_cli_etl_live_sync.py
+	@.venv/bin/python -m unittest -v python/tests/test_cli_etl_live_sync.py python/tests/test_cli_compute_orchestration.py
 
 # --- TypeScript ---
 
