@@ -18,6 +18,9 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Any, Dict
+import shutil
+import urllib.request
+import urllib.error
 
 
 def _repo_root() -> Path:
@@ -362,6 +365,87 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _doctor_check_http_ok(url: str, timeout_s: float = 1.5) -> dict:
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+        return {"ok": True, "status": int(getattr(resp, "status", 200)), "body": body[:2000]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def cmd_compute_doctor(args: argparse.Namespace) -> int:
+    """
+    Diagnose compute-plane readiness (Redis + Celery + Context Engine).
+    """
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    # Keep this light: avoid importing Celery-heavy modules here.
+    checks: dict[str, Any] = {}
+
+    # Tooling
+    checks["bun"] = {"ok": bool(shutil.which("bun")), "path": shutil.which("bun")}
+    checks["redis_server"] = {"ok": bool(shutil.which("redis-server")), "path": shutil.which("redis-server")}
+    checks["redis_cli"] = {"ok": bool(shutil.which("redis-cli")), "path": shutil.which("redis-cli")}
+
+    # Redis running?
+    redis_ping = None
+    if checks["redis_cli"]["ok"]:
+        import subprocess
+
+        try:
+            p = subprocess.run(["redis-cli", "ping"], capture_output=True, text=True, timeout=1.5)
+            redis_ping = (p.stdout or "").strip() or (p.stderr or "").strip()
+            checks["redis_running"] = {"ok": p.returncode == 0 and redis_ping == "PONG", "detail": redis_ping}
+        except Exception as e:
+            checks["redis_running"] = {"ok": False, "error": str(e)}
+    else:
+        checks["redis_running"] = {"ok": False, "error": "redis-cli not found"}
+
+    # Context Engine health
+    try:
+        from backend.config import settings  # type: ignore
+        base_url = getattr(settings, "eve_http_url", "http://127.0.0.1:3031").rstrip("/")
+    except Exception:
+        base_url = os.getenv("EVE_HTTP_URL", "http://127.0.0.1:3031").rstrip("/")
+    checks["context_engine_health"] = {"url": f"{base_url}/health", **_doctor_check_http_ok(f"{base_url}/health")}
+
+    # Python deps (compute plane)
+    try:
+        import celery  # noqa: F401
+        checks["celery_import"] = {"ok": True}
+    except Exception as e:
+        checks["celery_import"] = {"ok": False, "error": str(e)}
+
+    # Keys
+    checks["gemini_api_key_present"] = {
+        "ok": bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")),
+    }
+
+    ok = (
+        checks["bun"]["ok"]
+        and checks["redis_server"]["ok"]
+        and checks["redis_running"]["ok"]
+        and checks["celery_import"]["ok"]
+        and checks["context_engine_health"]["ok"]
+    )
+
+    advice: list[str] = []
+    if not checks["redis_running"]["ok"]:
+        advice.append("Start Redis: `redis-server --save \"\" --appendonly no`")
+    if not checks["context_engine_health"]["ok"]:
+        advice.append("Start Context Engine: `EVE_APP_DIR=... CONTEXT_ENGINE_PORT=3031 bun run --bun ts/eve/context-engine/server.ts`")
+    if not checks["celery_import"]["ok"]:
+        advice.append("Install compute deps: `python3 -m venv .venv && .venv/bin/pip install -r python/backend/requirements.txt` (or create a lighter requirements-compute.txt)")
+    if not checks["gemini_api_key_present"]["ok"]:
+        advice.append("Set GEMINI_API_KEY if you want embeddings via Gemini (optional).")
+
+    _print_json({"ok": ok, "checks": checks, "advice": advice}, pretty=args.pretty)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Common options are implemented as a parent parser so they can appear
     # either before or after the subcommand (argparse doesn't support "global
@@ -397,6 +481,10 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--from-db", default=None, help="Path to legacy ChatStats central.db (defaults to ChatStats location)")
     pm.add_argument("--force", action="store_true", help="Overwrite target eve.db if it exists")
     pm.set_defaults(func=cmd_migrate)
+
+    pcompute = sub.add_parser("compute", help="Compute plane (Redis/Celery) utilities", parents=[common])
+    pcompute_sub = pcompute.add_subparsers(dest="compute_cmd", required=True)
+    pcompute_sub.add_parser("doctor", help="Check compute-plane readiness", parents=[common]).set_defaults(func=cmd_compute_doctor)
 
     return p
 
