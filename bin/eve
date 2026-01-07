@@ -15,7 +15,9 @@ import contextlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict
 import shutil
@@ -113,7 +115,7 @@ def cmd_paths(args: argparse.Namespace) -> int:
         "db_path": str(settings.db_path),
         "source_chat_db": os.getenv("EVE_SOURCE_CHAT_DB"),
     }
-    _print_json(payload, pretty=args.pretty)
+    _print_json(payload, pretty=getattr(args, "pretty", False))
     return 0
 
 
@@ -134,7 +136,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         "db_path": str(settings.db_path),
         "migrated": True,
     }
-    _print_json(payload, pretty=args.pretty)
+    _print_json(payload, pretty=getattr(args, "pretty", False))
     return 0
 
 
@@ -147,7 +149,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     db_path = str(settings.db_path)
     if not Path(db_path).exists():
-        _print_json({"ok": False, "error": "db_missing", "db_path": db_path}, pretty=args.pretty)
+        _print_json({"ok": False, "error": "db_missing", "db_path": db_path}, pretty=getattr(args, "pretty", False))
         return 2
 
     with _db_connect(db_path) as conn:
@@ -175,7 +177,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "counts": counts,
         "live_sync_state": watermarks,
     }
-    _print_json(payload, pretty=args.pretty)
+    _print_json(payload, pretty=getattr(args, "pretty", False))
     return 0
 
 
@@ -268,7 +270,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             "timestamp_ns": boundary_ts_ns,
         },
     }
-    _print_json(payload, pretty=args.pretty)
+    _print_json(payload, pretty=getattr(args, "pretty", False))
     return 0
 
 
@@ -298,7 +300,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         )
     )
 
-    _print_json(result, pretty=args.pretty)
+    _print_json(result, pretty=getattr(args, "pretty", False))
     return 0
 
 
@@ -323,7 +325,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     if target_db.exists() and not args.force:
         _print_json(
             {"ok": False, "error": "target_exists", "db_path": str(target_db)},
-            pretty=args.pretty,
+            pretty=getattr(args, "pretty", False),
         )
         return 2
 
@@ -334,7 +336,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     if not src_db.exists():
         _print_json(
             {"ok": False, "error": "source_missing", "from_db": str(src_db)},
-            pretty=args.pretty,
+            pretty=getattr(args, "pretty", False),
         )
         return 2
 
@@ -360,7 +362,77 @@ def cmd_migrate(args: argparse.Namespace) -> int:
             "db_path": str(target_db),
             "migrated": True,
         },
-        pretty=args.pretty,
+        pretty=getattr(args, "pretty", False),
+    )
+    return 0
+
+
+def cmd_db_query(args: argparse.Namespace) -> int:
+    """Execute raw SQL against eve.db and return stable JSON.
+
+    Default is READ-ONLY: only allows SELECT/WITH unless --write is passed.
+    """
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings, configure_logging  # type: ignore
+    configure_logging(force=True)
+
+    db_path = str(settings.db_path)
+    sql = (args.sql or "").strip()
+    if not sql:
+        _print_json({"ok": False, "error": "missing_sql"}, pretty=getattr(args, "pretty", False))
+        return 2
+
+    first = (sql.lstrip().split(None, 1) or [""])[0].lower()
+    is_read = first in ("select", "with", "pragma")
+    if not is_read and not args.write:
+        _print_json(
+            {"ok": False, "error": "write_blocked", "message": "Non-SELECT statements require --write"},
+            pretty=getattr(args, "pretty", False),
+        )
+        return 2
+
+    max_rows = int(args.limit) if args.limit is not None else 200
+    if max_rows < 1:
+        max_rows = 1
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(sql)
+
+        rows_out: list[dict[str, Any]] = []
+        truncated = False
+
+        if cur.description is None:
+            # Non-row returning statement
+            conn.commit()
+            _print_json({"ok": True, "db_path": db_path, "rows": [], "row_count": 0}, pretty=getattr(args, "pretty", False))
+            return 0
+
+        cols = [d[0] for d in cur.description]
+        i = 0
+        while True:
+            row = cur.fetchone()
+            if row is None:
+                break
+            if i >= max_rows:
+                truncated = True
+                break
+            rows_out.append({k: row[k] for k in cols})
+            i += 1
+
+    _print_json(
+        {
+            "ok": True,
+            "db_path": db_path,
+            "columns": cols,
+            "rows": rows_out,
+            "row_count": len(rows_out),
+            "truncated": truncated,
+        },
+        pretty=getattr(args, "pretty", False),
     )
     return 0
 
@@ -442,34 +514,336 @@ def cmd_compute_doctor(args: argparse.Namespace) -> int:
     if not checks["gemini_api_key_present"]["ok"]:
         advice.append("Set GEMINI_API_KEY if you want embeddings via Gemini (optional).")
 
-    _print_json({"ok": ok, "checks": checks, "advice": advice}, pretty=args.pretty)
+    _print_json({"ok": ok, "checks": checks, "advice": advice}, pretty=getattr(args, "pretty", False))
+    return 0
+
+
+def _run_dir(app_dir: Path) -> Path:
+    d = app_dir / "run"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _read_pid(pid_path: Path) -> int | None:
+    try:
+        raw = pid_path.read_text().strip()
+        if not raw:
+            return None
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def _terminate_pid(pid: int, *, timeout_s: float = 2.0) -> None:
+    try:
+        os.kill(pid, 15)  # SIGTERM
+    except Exception:
+        return
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        if not _pid_is_running(pid):
+            return
+        time.sleep(0.05)
+    try:
+        os.kill(pid, 9)  # SIGKILL
+    except Exception:
+        pass
+
+
+def _start_process(
+    *,
+    name: str,
+    cmd: list[str],
+    cwd: str,
+    env: dict[str, str],
+    pid_path: Path,
+    log_path: Path,
+) -> dict[str, Any]:
+    existing = _read_pid(pid_path)
+    if existing and _pid_is_running(existing):
+        return {"ok": True, "name": name, "pid": existing, "already_running": True, "log": str(log_path)}
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "ab", buffering=0) as logf:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=logf, stderr=logf)
+    pid_path.write_text(str(proc.pid))
+    return {"ok": True, "name": name, "pid": proc.pid, "already_running": False, "log": str(log_path)}
+
+
+def cmd_compute_up(args: argparse.Namespace) -> int:
+    """Start compute plane processes (Redis + Context Engine + Celery)."""
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings  # type: ignore
+
+    repo = _repo_root()
+    app_dir = Path(settings.app_dir)
+    run_dir = _run_dir(app_dir)
+
+    redis_port = int(args.redis_port)
+    context_port = int(args.context_port)
+
+    env_base = dict(os.environ)
+    env_base["EVE_APP_DIR"] = str(app_dir)
+    env_base.setdefault("CHATSTATS_APP_DIR", str(app_dir))
+    env_base["PYTHONPATH"] = str(repo / "python")
+
+    out: dict[str, Any] = {"ok": True, "app_dir": str(app_dir), "run_dir": str(run_dir), "started": {}}
+
+    # --- Redis -----------------------------------------------------------
+    if not args.no_redis:
+        # If something already responds on this port, treat it as external.
+        try:
+            p = subprocess.run(["redis-cli", "-p", str(redis_port), "ping"], capture_output=True, text=True, timeout=1.0)
+            if p.returncode == 0 and (p.stdout or "").strip() == "PONG":
+                out["started"]["redis"] = {"ok": True, "external": True, "port": redis_port}
+            else:
+                raise RuntimeError("no PONG")
+        except Exception:
+            out["started"]["redis"] = _start_process(
+                name="redis",
+                cmd=["redis-server", "--save", "", "--appendonly", "no", "--bind", "127.0.0.1", "--port", str(redis_port)],
+                cwd=str(repo),
+                env=env_base,
+                pid_path=run_dir / "redis.pid",
+                log_path=run_dir / "redis.log",
+            )
+            out["started"]["redis"]["port"] = redis_port
+
+    # --- Context Engine --------------------------------------------------
+    if not args.no_context_engine:
+        base_url = f"http://127.0.0.1:{context_port}"
+        health = _doctor_check_http_ok(f"{base_url}/health", timeout_s=1.0)
+        if health.get("ok"):
+            out["started"]["context_engine"] = {"ok": True, "external": True, "port": context_port, "url": base_url}
+        else:
+            env_ctx = dict(env_base)
+            env_ctx["CONTEXT_ENGINE_PORT"] = str(context_port)
+            env_ctx["BUN_RUNTIME_TRANSPILER_CACHE_PATH"] = "0"
+            out["started"]["context_engine"] = _start_process(
+                name="context_engine",
+                cmd=["bun", "run", "--bun", str(repo / "ts" / "eve" / "context-engine" / "server.ts")],
+                cwd=str(repo),
+                env=env_ctx,
+                pid_path=run_dir / "context-engine.pid",
+                log_path=run_dir / "context-engine.log",
+            )
+            out["started"]["context_engine"]["port"] = context_port
+            out["started"]["context_engine"]["url"] = base_url
+
+    # --- Celery ----------------------------------------------------------
+    if not args.no_celery:
+        # If Celery isn't installed in this Python env, fail clearly.
+        try:
+            import celery  # noqa: F401
+        except Exception as e:
+            out["ok"] = False
+            out["started"]["celery"] = {"ok": False, "error": f"celery_import_failed: {e}"}
+            _print_json(out, pretty=getattr(args, "pretty", False))
+            return 1
+
+        # Warn (but don't fail) if Gemini key isn't present; embeddings will fail without it.
+        out["started"]["gemini_api_key_present"] = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENERATIVE_AI_API_KEY"))
+
+        env_celery = dict(env_base)
+        env_celery["CELERY_LOG_LEVEL"] = os.getenv("CELERY_LOG_LEVEL", "WARNING")
+        env_celery["CELERY_BROKER_URL"] = f"redis://127.0.0.1:{redis_port}/0"
+        env_celery["EVE_REDIS_URL"] = env_celery["CELERY_BROKER_URL"]
+        # Point Python to the TS context-engine server.
+        # NOTE: settings env var for eve_http_url is awkward (EVE_EVE_HTTP_URL) due to field naming.
+        env_celery.setdefault("EVE_EVE_HTTP_URL", f"http://127.0.0.1:{context_port}")
+
+        # Analysis + embeddings worker (gevent)
+        out["started"]["celery_worker_analysis"] = _start_process(
+            name="celery_worker_analysis",
+            cmd=[
+                sys.executable,
+                "-m",
+                "celery",
+                "-A",
+                "backend.celery_service.app",
+                "worker",
+                "-Q",
+                "chatstats-analysis,chatstats-embeddings,chatstats-events,chatstats-bulk,chatstats-report,chatstats-display",
+                "-P",
+                "gevent",
+                "--concurrency",
+                str(int(args.celery_concurrency)),
+                "--loglevel",
+                env_celery["CELERY_LOG_LEVEL"],
+            ],
+            cwd=str(repo),
+            env=env_celery,
+            pid_path=run_dir / "celery-analysis.pid",
+            log_path=run_dir / "celery-analysis.log",
+        )
+
+        # DB worker (single writer)
+        out["started"]["celery_worker_db"] = _start_process(
+            name="celery_worker_db",
+            cmd=[
+                sys.executable,
+                "-m",
+                "celery",
+                "-A",
+                "backend.celery_service.app",
+                "worker",
+                "-Q",
+                "chatstats-db",
+                "--concurrency",
+                "1",
+                "--loglevel",
+                env_celery["CELERY_LOG_LEVEL"],
+            ],
+            cwd=str(repo),
+            env=env_celery,
+            pid_path=run_dir / "celery-db.pid",
+            log_path=run_dir / "celery-db.log",
+        )
+
+        # Beat scheduler (periodic sealing + FAISS rebuild coalescer)
+        out["started"]["celery_beat"] = _start_process(
+            name="celery_beat",
+            cmd=[
+                sys.executable,
+                "-m",
+                "celery",
+                "-A",
+                "backend.celery_service.app",
+                "beat",
+                "--loglevel",
+                env_celery["CELERY_LOG_LEVEL"],
+                # Keep beat state out of the repo root; scope it to the app dir.
+                "--schedule",
+                str(run_dir / "celerybeat-schedule"),
+            ],
+            cwd=str(repo),
+            env=env_celery,
+            pid_path=run_dir / "celery-beat.pid",
+            log_path=run_dir / "celery-beat.log",
+        )
+
+    _print_json(out, pretty=getattr(args, "pretty", False))
+    return 0 if out.get("ok") else 1
+
+
+def cmd_compute_down(args: argparse.Namespace) -> int:
+    """Stop compute plane processes started by `eve compute up`."""
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings  # type: ignore
+    app_dir = Path(settings.app_dir)
+    run_dir = _run_dir(app_dir)
+
+    stopped: dict[str, Any] = {}
+    for name, pidfile in (
+        ("celery_beat", run_dir / "celery-beat.pid"),
+        ("celery_worker_db", run_dir / "celery-db.pid"),
+        ("celery_worker_analysis", run_dir / "celery-analysis.pid"),
+        ("context_engine", run_dir / "context-engine.pid"),
+        ("redis", run_dir / "redis.pid"),
+    ):
+        pid = _read_pid(pidfile)
+        if not pid:
+            stopped[name] = {"ok": True, "stopped": False}
+            continue
+        running = _pid_is_running(pid)
+        if running:
+            _terminate_pid(pid)
+        stopped[name] = {"ok": True, "pid": pid, "was_running": running, "stopped": True}
+        try:
+            pidfile.unlink()
+        except Exception:
+            pass
+
+    _print_json({"ok": True, "run_dir": str(run_dir), "stopped": stopped}, pretty=getattr(args, "pretty", False))
+    return 0
+
+
+def cmd_compute_status(args: argparse.Namespace) -> int:
+    """Report compute plane process status."""
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings  # type: ignore
+    app_dir = Path(settings.app_dir)
+    run_dir = _run_dir(app_dir)
+
+    redis_port = int(args.redis_port)
+    context_port = int(args.context_port)
+
+    status: dict[str, Any] = {"run_dir": str(run_dir), "redis_port": redis_port, "context_port": context_port}
+
+    def _proc_status(pidfile: Path) -> dict[str, Any]:
+        pid = _read_pid(pidfile)
+        if not pid:
+            return {"ok": True, "running": False}
+        return {"ok": True, "pid": pid, "running": _pid_is_running(pid)}
+
+    status["redis"] = _proc_status(run_dir / "redis.pid")
+    status["context_engine"] = _proc_status(run_dir / "context-engine.pid")
+    status["celery_worker_analysis"] = _proc_status(run_dir / "celery-analysis.pid")
+    status["celery_worker_db"] = _proc_status(run_dir / "celery-db.pid")
+    status["celery_beat"] = _proc_status(run_dir / "celery-beat.pid")
+
+    # Active health checks
+    status["redis_ping"] = {"ok": False}
+    try:
+        p = subprocess.run(["redis-cli", "-p", str(redis_port), "ping"], capture_output=True, text=True, timeout=1.0)
+        status["redis_ping"] = {"ok": p.returncode == 0 and (p.stdout or "").strip() == "PONG", "detail": (p.stdout or p.stderr).strip()}
+    except Exception as e:
+        status["redis_ping"] = {"ok": False, "error": str(e)}
+
+    base_url = f"http://127.0.0.1:{context_port}"
+    status["context_engine_health"] = {"url": f"{base_url}/health", **_doctor_check_http_ok(f"{base_url}/health", timeout_s=1.0)}
+
+    _print_json({"ok": True, "status": status}, pretty=getattr(args, "pretty", False))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # Common options are implemented as a parent parser so they can appear
-    # either before or after the subcommand (argparse doesn't support "global
-    # options anywhere" without this pattern).
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--app-dir", help="Override Eve app dir (default: ~/Library/Application Support/Eve)")
-    common.add_argument("--source-chat-db", help="Override source chat.db path (default: ~/Library/Messages/chat.db)")
-    common.add_argument("--sqlite-busy-timeout-ms", type=int, help="Override SQLite busy timeout (ms)")
-    common.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
+    # Common options should be accepted BOTH before and after subcommands.
+    # Argparse subparsers will otherwise overwrite values with their defaults,
+    # so we use two parent parsers:
+    # - root: normal defaults
+    # - sub: defaults suppressed (so it won't clobber values parsed at root)
+    common_root = argparse.ArgumentParser(add_help=False)
+    common_sub = argparse.ArgumentParser(add_help=False)
 
-    p = argparse.ArgumentParser(prog="eve", description="Eve CLI", parents=[common])
+    common_root.add_argument("--app-dir", default=None, help="Override Eve app dir (default: ~/Library/Application Support/Eve)")
+    common_root.add_argument("--source-chat-db", default=None, help="Override source chat.db path (default: ~/Library/Messages/chat.db)")
+    common_root.add_argument("--sqlite-busy-timeout-ms", type=int, default=None, help="Override SQLite busy timeout (ms)")
+    common_root.add_argument("--pretty", action="store_true", default=False, help="Pretty-print JSON output")
+
+    common_sub.add_argument("--app-dir", default=argparse.SUPPRESS, help="Override Eve app dir (default: ~/Library/Application Support/Eve)")
+    common_sub.add_argument("--source-chat-db", default=argparse.SUPPRESS, help="Override source chat.db path (default: ~/Library/Messages/chat.db)")
+    common_sub.add_argument("--sqlite-busy-timeout-ms", type=int, default=argparse.SUPPRESS, help="Override SQLite busy timeout (ms)")
+    common_sub.add_argument("--pretty", action="store_true", default=argparse.SUPPRESS, help="Pretty-print JSON output")
+
+    p = argparse.ArgumentParser(prog="eve", description="Eve CLI", parents=[common_root])
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("paths", help="Print computed paths (app dir, db path)", parents=[common]).set_defaults(func=cmd_paths)
-    sub.add_parser("init", help="Initialize eve.db (run migrations)", parents=[common]).set_defaults(func=cmd_init)
-    sub.add_parser("status", help="Print database counts + live sync state", parents=[common]).set_defaults(func=cmd_status)
+    sub.add_parser("paths", help="Print computed paths (app dir, db path)", parents=[common_sub]).set_defaults(func=cmd_paths)
+    sub.add_parser("init", help="Initialize eve.db (run migrations)", parents=[common_sub]).set_defaults(func=cmd_init)
+    sub.add_parser("status", help="Print database counts + live sync state", parents=[common_sub]).set_defaults(func=cmd_status)
 
-    psync = sub.add_parser("sync", help="Run one-shot ETL import from chat.db into eve.db", parents=[common])
+    psync = sub.add_parser("sync", help="Run one-shot ETL import from chat.db into eve.db", parents=[common_sub])
     psync.add_argument("--race-mode", action="store_true", help="Enable race mode for first import (unsafe PRAGMAs)")
     psync.add_argument("--no-contacts", action="store_true", help="Skip AddressBook contact import")
     psync.set_defaults(func=cmd_sync)
 
-    pw = sub.add_parser("watch", help="Run live sync watcher (bounded for tests via --seconds/--max-batches)", parents=[common])
+    pw = sub.add_parser("watch", help="Run live sync watcher (bounded for tests via --seconds/--max-batches)", parents=[common_sub])
     pw.add_argument("--seconds", type=float, default=None, help="Stop after N seconds")
     pw.add_argument("--max-batches", type=int, default=None, help="Stop after N processed batches")
     pw.add_argument("--poll-interval-ms", type=int, default=50, help="Filesystem poll interval (ms)")
@@ -477,14 +851,38 @@ def build_parser() -> argparse.ArgumentParser:
     pw.add_argument("--no-conversation-tracking", action="store_true", help="Disable Redis-backed conversation sealing/tracking")
     pw.set_defaults(func=cmd_watch)
 
-    pm = sub.add_parser("migrate", help="Copy ChatStats central.db into Eve eve.db location and run migrations", parents=[common])
+    pm = sub.add_parser("migrate", help="Copy ChatStats central.db into Eve eve.db location and run migrations", parents=[common_sub])
     pm.add_argument("--from-db", default=None, help="Path to legacy ChatStats central.db (defaults to ChatStats location)")
     pm.add_argument("--force", action="store_true", help="Overwrite target eve.db if it exists")
     pm.set_defaults(func=cmd_migrate)
 
-    pcompute = sub.add_parser("compute", help="Compute plane (Redis/Celery) utilities", parents=[common])
+    pcompute = sub.add_parser("compute", help="Compute plane (Redis/Celery) utilities", parents=[common_sub])
     pcompute_sub = pcompute.add_subparsers(dest="compute_cmd", required=True)
-    pcompute_sub.add_parser("doctor", help="Check compute-plane readiness", parents=[common]).set_defaults(func=cmd_compute_doctor)
+    pcompute_sub.add_parser("doctor", help="Check compute-plane readiness", parents=[common_sub]).set_defaults(func=cmd_compute_doctor)
+    pup = pcompute_sub.add_parser("up", help="Start Redis + Context Engine + Celery workers", parents=[common_sub])
+    pup.add_argument("--redis-port", type=int, default=6379)
+    pup.add_argument("--context-port", type=int, default=3031)
+    pup.add_argument("--celery-concurrency", type=int, default=250)
+    pup.add_argument("--no-redis", action="store_true")
+    pup.add_argument("--no-context-engine", action="store_true")
+    pup.add_argument("--no-celery", action="store_true")
+    pup.set_defaults(func=cmd_compute_up)
+
+    pdown = pcompute_sub.add_parser("down", help="Stop processes started by compute up", parents=[common_sub])
+    pdown.set_defaults(func=cmd_compute_down)
+
+    pstat = pcompute_sub.add_parser("status", help="Show compute-plane status", parents=[common_sub])
+    pstat.add_argument("--redis-port", type=int, default=6379)
+    pstat.add_argument("--context-port", type=int, default=3031)
+    pstat.set_defaults(func=cmd_compute_status)
+
+    pdb = sub.add_parser("db", help="Serverless eve.db access helpers", parents=[common_sub])
+    pdb_sub = pdb.add_subparsers(dest="db_cmd", required=True)
+    pq = pdb_sub.add_parser("query", help="Run raw SQL against eve.db", parents=[common_sub])
+    pq.add_argument("--sql", required=True, help="SQL to execute (default read-only: SELECT/WITH)")
+    pq.add_argument("--limit", type=int, default=200, help="Max rows to return")
+    pq.add_argument("--write", action="store_true", help="Allow non-SELECT statements (unsafe)")
+    pq.set_defaults(func=cmd_db_query)
 
     return p
 
