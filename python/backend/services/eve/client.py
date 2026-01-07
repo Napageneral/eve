@@ -90,6 +90,32 @@ class EveClient:
         except Exception as e:
             logger.error(f"[EveClient] Unexpected error executing {prompt_id}: {e}", exc_info=True)
             raise ValueError(f"Unexpected error executing prompt {prompt_id}: {e}") from e
+
+    def encode_conversation(self, conversation_id: int, chat_id: int) -> Dict[str, Any]:
+        """Encode a conversation via Eve Context Engine (/engine/encode)."""
+        payload = {"conversation_id": int(conversation_id), "chat_id": int(chat_id)}
+        try:
+            response = self.client.post(f"{self.base_url}/engine/encode", json=payload)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            error_detail = e.response.text if e.response else str(e)
+            logger.error(
+                "[EveClient] HTTP %s encoding convo=%s chat=%s: %s",
+                e.response.status_code if e.response else "error",
+                conversation_id,
+                chat_id,
+                error_detail,
+            )
+            raise ValueError(
+                f"Failed to encode conversation {conversation_id}: HTTP {e.response.status_code if e.response else 'error'}"
+            ) from e
+        except httpx.RequestError as e:
+            logger.error("[EveClient] Request failed for encode convo=%s chat=%s: %s", conversation_id, chat_id, e)
+            raise ValueError(f"Failed to connect to Eve server at {self.base_url}: {e}") from e
+        except Exception as e:
+            logger.error("[EveClient] Unexpected error encoding convo=%s chat=%s: %s", conversation_id, chat_id, e, exc_info=True)
+            raise ValueError(f"Unexpected error encoding conversation {conversation_id}: {e}") from e
     
     def __del__(self):
         """Cleanup HTTP client on destruction"""

@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://localhost:6379/0", description="Redis connection string")
     
     # --- eve context engine ------------------------------------------------
-    eve_http_url: str = Field("http://localhost:3032", description="Eve ODU HTTP server URL")
+    eve_http_url: str = Field("http://localhost:3031", description="Eve Context Engine HTTP server URL")
 
     # ---------------------------------------------------------------------
     # Derived helpers ------------------------------------------------------

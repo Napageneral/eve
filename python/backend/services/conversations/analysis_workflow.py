@@ -54,16 +54,11 @@ class ConversationAnalysisWorkflow:
                 )
             else:
                 # ALWAYS use Eve encoding service for standard analysis
-                import requests
-                
+                from backend.services.eve.client import get_eve_client
+                eve = get_eve_client()
+
                 logger.info(f"[CA] Using EVE encoding for convo={convo_id} chat={chat_id}")
-                resp = requests.post(
-                    'http://127.0.0.1:3032/engine/encode',
-                    json={'conversation_id': convo_id, 'chat_id': chat_id},
-                    timeout=30
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                data = eve.encode_conversation(convo_id, chat_id)
                 encoded_text = data.get('encoded_text', '')
                 
                 if not encoded_text:
@@ -333,16 +328,11 @@ class ConversationAnalysisWorkflow:
                 )
             
             # ALWAYS use Eve encoding service for standard analysis
-            import requests
-            
+            from backend.services.eve.client import get_eve_client
+            eve = get_eve_client()
+
             logger.info(f"[CA.LLM] Using EVE encoding for convo={convo_id} chat={chat_id}")
-            resp = requests.post(
-                'http://127.0.0.1:3031/engine/encode',
-                json={'conversation_id': convo_id, 'chat_id': chat_id},
-                timeout=30
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            data = eve.encode_conversation(convo_id, chat_id)
             encoded_text = data.get('encoded_text', '')
             
             if not encoded_text:

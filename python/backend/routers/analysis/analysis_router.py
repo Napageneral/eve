@@ -394,8 +394,9 @@ async def estimate_global_analysis_cost():
                 conv_id = conv_row[0]
                 try:
                     # Use Eve encoding service via HTTP
+                    base_url = getattr(settings, "eve_http_url", "http://127.0.0.1:3031").rstrip("/")
                     resp = requests.post(
-                        'http://127.0.0.1:3032/engine/encode',
+                        f"{base_url}/engine/encode",
                         json={'conversation_id': conv_id, 'chat_id': chat_id},
                         timeout=10
                     )

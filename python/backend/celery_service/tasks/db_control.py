@@ -6,6 +6,7 @@ from sqlalchemy.exc import OperationalError
 import time
 import random
 import logging
+import os
 from backend.db.session_manager import new_session
 
 logger = logging.getLogger(__name__)
@@ -88,9 +89,14 @@ def historic_status_finalize(run_id: str, success: int, failed: int) -> None:
     # Auto-spawn ExecutionAgents for post-analysis work (Intentions + Overall analysis)
     # THIS IS THE RIGHT PLACE - called ONCE per run_id after ALL conversations complete
     try:
+        # Eve CLI-first: the agent/UI plane is optional and the new TS Context Engine
+        # server no longer exposes /agents/* endpoints. Keep this behavior gated.
+        if os.getenv("EVE_ENABLE_AGENT_SPAWN", "0").lower() not in ("1", "true", "yes", "on"):
+            return
         import requests
-        eve_port = 3032  # Eve ODU server port
-        spawn_url = f"http://127.0.0.1:{eve_port}/agents/spawn-post-analysis"
+        from backend.config import settings
+        base_url = getattr(settings, "eve_http_url", "http://127.0.0.1:3031").rstrip("/")
+        spawn_url = f"{base_url}/agents/spawn-post-analysis"
         logger.info("[FINALIZE] All conversations complete for run_id=%s - spawning ExecutionAgents", run_id)
         logger.info("[FINALIZE] Analyzed: %d successful, %d failed", success, failed)
         

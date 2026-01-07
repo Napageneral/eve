@@ -322,6 +322,7 @@ def encode_one(conversation_data: Dict[str, Any]) -> str:
     """Encode a single conversation for analysis using Eve service."""
     try:
         import requests
+        from backend.config import settings
         
         convo_id = conversation_data.get("convo_id")
         chat_id = conversation_data.get("chat_id")
@@ -334,9 +335,10 @@ def encode_one(conversation_data: Dict[str, Any]) -> str:
                 "Commitment analysis disabled - CommitmentEncodingService deleted during Eve migration"
             )
         
-        # Use Eve encoding service
+        # Use Eve encoding service (configurable base URL)
+        base_url = getattr(settings, "eve_http_url", "http://127.0.0.1:3031").rstrip("/")
         resp = requests.post(
-            'http://127.0.0.1:3032/engine/encode',
+            f"{base_url}/engine/encode",
             json={'conversation_id': convo_id, 'chat_id': chat_id},
             timeout=30
         )
