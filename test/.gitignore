@@ -1,0 +1,12 @@
+# Test artifacts
+screenshots/
+test-results/
+playwright-report/
+*.png
+*.webm
+
+
+
+
+
+
