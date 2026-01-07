@@ -39,6 +39,9 @@ def _db_is_empty() -> bool:
         """)).scalar())
 
 def get_live_chat_db_path() -> str:
+    override = os.getenv("EVE_SOURCE_CHAT_DB") or os.getenv("CHATSTATS_SOURCE_CHAT_DB")
+    if override:
+        return os.path.expanduser(override)
     home = os.path.expanduser('~')
     return os.path.join(home, 'Library', 'Messages', 'chat.db')
 
@@ -122,7 +125,12 @@ def ensure_import_indexes():
         else:
             logger.warning("Duplicate contact identifiers exist; skipping unique index creation until cleanup")
 
-def import_live_data(since_date: Optional[datetime] = None, race_mode: bool = False):
+def import_live_data(
+    since_date: Optional[datetime] = None,
+    race_mode: bool = False,
+    *,
+    include_contacts: bool = True,
+):
     """
     For the live DB import:
       - If no since_date, we do a "from-scratch" forward logic (extract all).
@@ -136,66 +144,74 @@ def import_live_data(since_date: Optional[datetime] = None, race_mode: bool = Fa
         logger.warning("Live import already running – duplicate trigger ignored")
         return
 
-    t0 = time()
-    sms_db_path = get_live_chat_db_path()
-    if not os.path.exists(sms_db_path):
-        logger.error(f"Messages database not found at {sms_db_path}")
-        return
-    
-    print("\nLIVE IMPORT")
-    print("=" * 50)
-    if since_date:
-        print(f"Importing data since: {since_date.isoformat()}")
-    else:
-        print("Importing all live data (no since_date).")
+    try:
+        t0 = time()
+        sms_db_path = get_live_chat_db_path()
+        if not os.path.exists(sms_db_path):
+            logger.error(f"Messages database not found at {sms_db_path}")
+            return
+        
+        print("\nLIVE IMPORT")
+        print("=" * 50)
+        if since_date:
+            print(f"Importing data since: {since_date.isoformat()}")
+        else:
+            print("Importing all live data (no since_date).")
 
-    # Auto-enable race mode for very first import on an empty DB
-    if since_date is None and not race_mode and _db_is_empty():
-        race_mode = True
-    
-    t = time()
-    etl_live_contacts()
-    print(f"[Live] Contacts ETL:      {round(time() - t, 2):>6}s")
-    
-    t = time()
-    etl_chats(sms_db_path)
-    print(f"[Live] Chats ETL:         {round(time() - t, 2):>6}s")
+        # Auto-enable race mode for very first import on an empty DB
+        if since_date is None and not race_mode and _db_is_empty():
+            race_mode = True
 
-    if race_mode:
-        print("[Live] *** RACE MODE ON (unsafe PRAGMAs + dropping indexes) ***")
-        drop_import_indexes()
-    
-    t = time()
-    etl_messages(sms_db_path, since_date, race_mode=race_mode)
-    print(f"[Live] Messages ETL:      {round(time() - t, 2):>6}s")
+        if include_contacts:
+            t = time()
+            etl_live_contacts()
+            print(f"[Live] Contacts ETL:      {round(time() - t, 2):>6}s")
+        else:
+            print("[Live] Contacts ETL:      (skipped)")
 
-    # Ensure indexes *before* conversations so they can leverage (chat_id, timestamp)
-    t = time()
-    ensure_import_indexes()
-    print(f"[Live] Ensured indexes:   {round(time() - t, 2):>6}s")
-    
-    t = time()
-    etl_attachments(sms_db_path, since_date)
-    print(f"[Live] Attachments ETL:   {round(time() - t, 2):>6}s")
-    
-    # Use the normal "etl_conversations" incremental approach for live data
-    # (or from-scratch if no since_date).
-    t = time()
-    etl_conversations(since_date=since_date, race_mode=race_mode)
-    print(f"[Live] Conversations ETL: {round(time() - t, 2):>6}s")
-    
-    if race_mode:
-        # PRAGMAs back to safe settings
-        restore_safe_pragmas()
-        print("[Live] *** RACE MODE OFF → WAL/NORMAL restored ***")
+        t = time()
+        etl_chats(sms_db_path)
+        print(f"[Live] Chats ETL:         {round(time() - t, 2):>6}s")
 
-    total_time = round(time() - t0, 2)
-    print("-" * 50)
-    print(f"Total Live Import Time:   {total_time:>6}s")
-    print("=" * 50)
+        if race_mode:
+            print("[Live] *** RACE MODE ON (unsafe PRAGMAs + dropping indexes) ***")
+            drop_import_indexes()
 
-    # Always release the lock so future imports can run
-    _live_import_lock.release()
+        t = time()
+        etl_messages(sms_db_path, since_date, race_mode=race_mode)
+        print(f"[Live] Messages ETL:      {round(time() - t, 2):>6}s")
+
+        # Ensure indexes *before* conversations so they can leverage (chat_id, timestamp)
+        t = time()
+        ensure_import_indexes()
+        print(f"[Live] Ensured indexes:   {round(time() - t, 2):>6}s")
+
+        t = time()
+        etl_attachments(sms_db_path, since_date)
+        print(f"[Live] Attachments ETL:   {round(time() - t, 2):>6}s")
+
+        # Use the normal "etl_conversations" incremental approach for live data
+        # (or from-scratch if no since_date).
+        t = time()
+        etl_conversations(since_date=since_date, race_mode=race_mode)
+        print(f"[Live] Conversations ETL: {round(time() - t, 2):>6}s")
+
+        if race_mode:
+            # PRAGMAs back to safe settings
+            restore_safe_pragmas()
+            print("[Live] *** RACE MODE OFF → WAL/NORMAL restored ***")
+
+        total_time = round(time() - t0, 2)
+        print("-" * 50)
+        print(f"Total Live Import Time:   {total_time:>6}s")
+        print("=" * 50)
+
+    finally:
+        # Always release the lock so future imports can run
+        try:
+            _live_import_lock.release()
+        except Exception:
+            pass
 
 def drop_import_indexes():
     """Drop write-heavy indexes before bulk load (we recreate them after)."""

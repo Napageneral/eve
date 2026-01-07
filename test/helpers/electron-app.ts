@@ -121,15 +121,15 @@ export async function cleanAppState(): Promise<void> {
 
   // 2. Clear storage (npm run clear-storage)
   console.log('[Test]   - Clearing localStorage and sessionStorage...');
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/Local\\ Storage/*', { cwd: appRoot }).catch(() => {});
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/Session\\ Storage/*', { cwd: appRoot }).catch(() => {});
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/Preferences', { cwd: appRoot }).catch(() => {});
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/Cookies*', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/Local\\ Storage/*', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/Session\\ Storage/*', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/Preferences', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/Cookies*', { cwd: appRoot }).catch(() => {});
 
   // 3. Clear DB (npm run clear-db)
   console.log('[Test]   - Clearing databases...');
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/central.db*', { cwd: appRoot }).catch(() => {});
-  await execAsync('rm -rf ~/.chatstats', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/eve.db*', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/.eve', { cwd: appRoot }).catch(() => {});
 
   // 3.5. Clean ODU test state
   await cleanODUTestState();
@@ -143,13 +143,13 @@ export async function cleanAppState(): Promise<void> {
   await execAsync('redis-cli FLUSHALL || true', { cwd: appRoot }).catch(() => {});
   await execAsync('rm -rf backend/celerybeat-schedule* backend/*.db', { cwd: appRoot }).catch(() => {});
   await execAsync('rm -rf eve/.claudesdk', { cwd: appRoot }).catch(() => {});
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/agents.db*', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/agents.db*', { cwd: appRoot }).catch(() => {});
   
   // 5. Clean DB files (npm run clean-db-files)
   console.log('[Test]   - Cleaning WAL files...');
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/central.db-wal', { cwd: appRoot }).catch(() => {});
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/central.db-shm', { cwd: appRoot }).catch(() => {});
-  await execAsync('rm -rf ~/Library/Application\\ Support/ChatStats/central.db-journal', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/eve.db-wal', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/eve.db-shm', { cwd: appRoot }).catch(() => {});
+  await execAsync('rm -rf ~/Library/Application\\ Support/Eve/eve.db-journal', { cwd: appRoot }).catch(() => {});
   
   console.log('[Test] ✅ Clean wipe completed');
 }
@@ -212,11 +212,13 @@ async function startDevServers(): Promise<void> {
     env: {
       ...process.env,
       // Pass test database path to Eve service
-      CHATSTATS_APP_DIR: testUserData,
+      EVE_APP_DIR: testUserData,
+      CHATSTATS_APP_DIR: testUserData, // compat
       // Force Bun to not cache modules
       BUN_CONFIG_NO_CACHE: '1',
       // Set aggressive SQLite timeout for test concurrency
-      CHATSTATS_SQLITE_BUSY_TIMEOUT_MS: '60000',
+      EVE_SQLITE_BUSY_TIMEOUT_MS: '60000',
+      CHATSTATS_SQLITE_BUSY_TIMEOUT_MS: '60000', // compat
     },
   });
   
@@ -288,11 +290,13 @@ export async function launchApp(): Promise<{
       NODE_ENV: 'development',
       PLAYWRIGHT_TEST: 'true', // Tell Electron we're in E2E test (prevents auto-shutdown)
       // Point Eve's database to test userData directory (MUST be absolute path for child processes)
-      CHATSTATS_APP_DIR: testUserData,
+      EVE_APP_DIR: testUserData,
+      CHATSTATS_APP_DIR: testUserData, // compat
       // Disable Bun's runtime transpiler cache to ensure fresh TypeScript compilation in tests
       BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
       // Set aggressive SQLite timeout for test concurrency (applies to both Python and Eve)
-      CHATSTATS_SQLITE_BUSY_TIMEOUT_MS: '60000',
+      EVE_SQLITE_BUSY_TIMEOUT_MS: '60000',
+      CHATSTATS_SQLITE_BUSY_TIMEOUT_MS: '60000', // compat
     },
   });
   

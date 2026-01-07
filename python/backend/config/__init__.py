@@ -1,4 +1,4 @@
-"""Centralised application configuration for the ChatStats backend.
+"""Centralised application configuration for the Eve backend.
 
 This package replaces the legacy ``config.py`` + ``config_environment.py`` cluster
 by exposing a single ``settings`` object (lazy-cached) and convenience constants
@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover – runtime path for Pydantic ≥ 2.0
 
 
 class Settings(BaseSettings):
-    """Runtime settings loaded from environment variables (``CHATSTATS_*``)."""
+    """Runtime settings loaded from environment variables (``EVE_*``)."""
 
     # --- generic -----------------------------------------------------------
     debug: bool = Field(False, description="Enable debug/auto-reload mode")
@@ -47,14 +47,16 @@ class Settings(BaseSettings):
 
     # --- paths -------------------------------------------------------------
     if sys.platform == "darwin":
-        _default_app_dir: Final[Path] = Path.home() / "Library" / "Application Support" / "ChatStats"
+        _default_app_dir: Final[Path] = Path.home() / "Library" / "Application Support" / "Eve"
     elif sys.platform.startswith("win"):
-        _default_app_dir = Path(os.getenv("APPDATA", Path.home())) / "ChatStats"
+        _default_app_dir = Path(os.getenv("APPDATA", Path.home())) / "Eve"
     else:  # Linux and others
-        _default_app_dir = Path.home() / ".local" / "share" / "ChatStats"
+        _default_app_dir = Path.home() / ".local" / "share" / "Eve"
 
     app_dir: Path = Field(_default_app_dir, description="Root application data directory")
-    db_path: Path = Field(default_factory=lambda: Settings._default_app_dir / "central.db", description="SQLite DB location")
+    # If not explicitly set, we derive it from app_dir in get_settings() to keep
+    # env overrides (EVE_APP_DIR) working consistently across Pydantic v1/v2.
+    db_path: Path | None = Field(None, description="SQLite DB location (defaults to app_dir/eve.db)")
 
     # --- broker ------------------------------------------------------------
     broker_type: str = Field("redis", description="redis | lavinmq | rabbitmq (future)")
@@ -77,7 +79,7 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------
     class Config:
-        env_prefix = "CHATSTATS_"  # environment variables like CHATSTATS_DEBUG=1
+        env_prefix = "EVE_"  # environment variables like EVE_DEBUG=1
         env_file = ".env"
         case_sensitive = False
 
@@ -95,8 +97,17 @@ def get_settings() -> Settings:  # noqa: D401 (simple function)
     can immediately write log files, databases, etc. without extra checks.
     """
 
+    # Backwards-compat: if callers still set CHATSTATS_* vars, honor them unless
+    # an explicit EVE_* override is present.
+    if not os.getenv("EVE_APP_DIR") and os.getenv("CHATSTATS_APP_DIR"):
+        os.environ["EVE_APP_DIR"] = os.environ["CHATSTATS_APP_DIR"]
+    if not os.getenv("EVE_DB_PATH") and os.getenv("CHATSTATS_DB_PATH"):
+        os.environ["EVE_DB_PATH"] = os.environ["CHATSTATS_DB_PATH"]
+
     s = Settings()  # env-driven, will raise `ValidationError` if invalid
     s.app_dir.mkdir(parents=True, exist_ok=True)
+    if s.db_path is None:
+        s.db_path = s.app_dir / "eve.db"
     return s
 
 

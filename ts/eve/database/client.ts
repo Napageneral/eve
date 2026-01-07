@@ -32,9 +32,11 @@ export class DatabaseClient {
    * Get default ChatStats database path
    */
   private getDefaultDbPath(): string {
-    const appDataDir = process.env.CHATSTATS_APP_DIR || 
-      path.join(os.homedir(), 'Library', 'Application Support', 'ChatStats');
-    return path.join(appDataDir, 'central.db');
+    const appDataDir =
+      process.env.EVE_APP_DIR ||
+      process.env.CHATSTATS_APP_DIR ||
+      path.join(os.homedir(), 'Library', 'Application Support', 'Eve');
+    return path.join(appDataDir, 'eve.db');
   }
 
   /**

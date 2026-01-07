@@ -63,6 +63,8 @@ export async function startContextEngineServer(opts: {
     NODE_ENV: 'test',
     CONTEXT_ENGINE_PORT: String(port),
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
+    // New Eve app dir env var, with ChatStats compat for any leftover readers
+    EVE_APP_DIR: appDir,
     CHATSTATS_APP_DIR: appDir,
   };
 

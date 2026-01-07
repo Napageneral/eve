@@ -6,7 +6,7 @@
  * What it checks:
  * - /health comes up
  * - prompt registry loads (test-v1 exists)
- * - /engine/execute assembles static context (no central.db required)
+ * - /engine/execute assembles static context (no eve.db required)
  */
 
 import * as path from 'path';

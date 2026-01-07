@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help tree py-check ts-check ts-install test
+.PHONY: help tree py-check py-install py-test ts-check ts-install test test-ts test-py
 
 help:
 	@echo "Eve (WIP)"
@@ -10,7 +10,8 @@ help:
 	@echo "  make py-check    Sanity-check Python backend import graph"
 	@echo "  make ts-check    Sanity-check TypeScript workspace (tsc)"
 	@echo "  make ts-install  Install Bun/TS deps (ts/)"
-	@echo "  make test        Run Eve tests (no Electron; context-engine + encoding)"
+	@echo "  make py-install  Create venv + install minimal Python deps for CLI/ETL"
+	@echo "  make test        Run all Eve tests (TS + Python)"
 
 # --- utils ---
 
@@ -23,6 +24,14 @@ tree:
 py-check:
 	@python3 -c "import sys; sys.path.insert(0, 'python'); import backend; print('OK: imported backend as namespace package')"
 
+py-install:
+	@python3 -m venv .venv
+	@.venv/bin/python -m pip install --upgrade pip
+	@.venv/bin/python -m pip install -r python/requirements-cli.txt
+
+py-test: py-install
+	@.venv/bin/python -m unittest -v python/tests/test_cli_etl_live_sync.py
+
 # --- TypeScript ---
 
 ts-check:
@@ -33,10 +42,14 @@ ts-install:
 
 # --- Tests ---
 
-test:
+test: test-ts test-py
+
+test-ts:
 	@command -v bun >/dev/null 2>&1 || (echo "bun is required to run tests" && exit 1)
 	@echo "Running unit tests..."
 	@bun run --bun test/unit/broker-communication.test.ts
 	@bun run --bun test/unit/encoding-endpoint.test.ts
 	@bun run --bun test/unit/preset-ea-spawning.test.ts
+
+test-py: py-test
 

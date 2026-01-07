@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""
+Eve CLI (CLI-first).
+
+This intentionally avoids any Electron/UI assumptions.
+All command results are emitted as stable JSON on stdout.
+Any logs / progress output should go to stderr.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+from typing import Any, Dict
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _maybe_reexec_into_venv() -> None:
+    """
+    Dev ergonomics: if a local .venv exists, prefer it so the CLI can run
+    without requiring global site-packages.
+    """
+    if os.getenv("EVE_NO_VENV_REEXEC", "0").lower() in ("1", "true", "yes", "on"):
+        return
+    repo = _repo_root()
+    venv_dir = repo / ".venv"
+    vpython = venv_dir / "bin" / "python"
+    try:
+        if not vpython.exists():
+            return
+
+        # Don't use Path(...).resolve() on sys.executable here: venv python is often a symlink
+        # to the base interpreter, so resolve() can make them look identical even when the
+        # environment (site-packages) differs.
+        in_this_venv = False
+        try:
+            venv_env = os.getenv("VIRTUAL_ENV")
+            if venv_env and Path(venv_env).resolve() == venv_dir.resolve():
+                in_this_venv = True
+        except Exception:
+            pass
+        try:
+            if Path(sys.prefix).resolve() == venv_dir.resolve():
+                in_this_venv = True
+        except Exception:
+            pass
+
+        if not in_this_venv:
+            os.execv(str(vpython), [str(vpython), str(Path(__file__).resolve()), *sys.argv[1:]])
+    except Exception:
+        # Best-effort only; fall back to current interpreter.
+        return
+
+
+def _ensure_python_path() -> None:
+    # Make `python/backend/...` importable as `backend.*`
+    py_root = _repo_root() / "python"
+    sys.path.insert(0, str(py_root))
+
+
+def _set_env_from_args(args: argparse.Namespace) -> None:
+    # CLI default: keep stdout clean for JSON, send logs to stderr
+    os.environ.setdefault("EVE_LOG_TO_STDERR", "1")
+
+    if getattr(args, "app_dir", None):
+        os.environ["EVE_APP_DIR"] = os.path.expanduser(args.app_dir)
+        # Compat for any legacy readers
+        os.environ.setdefault("CHATSTATS_APP_DIR", os.environ["EVE_APP_DIR"])
+
+    if getattr(args, "source_chat_db", None):
+        os.environ["EVE_SOURCE_CHAT_DB"] = os.path.expanduser(args.source_chat_db)
+        os.environ.setdefault("CHATSTATS_SOURCE_CHAT_DB", os.environ["EVE_SOURCE_CHAT_DB"])
+
+    if getattr(args, "sqlite_busy_timeout_ms", None):
+        os.environ["EVE_SQLITE_BUSY_TIMEOUT_MS"] = str(args.sqlite_busy_timeout_ms)
+        os.environ.setdefault("CHATSTATS_SQLITE_BUSY_TIMEOUT_MS", os.environ["EVE_SQLITE_BUSY_TIMEOUT_MS"])
+
+
+def _print_json(payload: Dict[str, Any], *, pretty: bool = False) -> None:
+    if pretty:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+
+
+def _db_connect(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def cmd_paths(args: argparse.Namespace) -> int:
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings  # type: ignore
+
+    payload = {
+        "ok": True,
+        "app_dir": str(settings.app_dir),
+        "db_path": str(settings.db_path),
+        "source_chat_db": os.getenv("EVE_SOURCE_CHAT_DB"),
+    }
+    _print_json(payload, pretty=args.pretty)
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings, configure_logging  # type: ignore
+    from backend.startup import database as startup_db  # type: ignore
+    configure_logging(force=True)
+
+    # Run migrations (creates schema)
+    asyncio.run(startup_db.apply_migrations())
+
+    payload = {
+        "ok": True,
+        "app_dir": str(settings.app_dir),
+        "db_path": str(settings.db_path),
+        "migrated": True,
+    }
+    _print_json(payload, pretty=args.pretty)
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings, configure_logging  # type: ignore
+    configure_logging(force=True)
+
+    db_path = str(settings.db_path)
+    if not Path(db_path).exists():
+        _print_json({"ok": False, "error": "db_missing", "db_path": db_path}, pretty=args.pretty)
+        return 2
+
+    with _db_connect(db_path) as conn:
+        cur = conn.cursor()
+        tables = ["contacts", "contact_identifiers", "chats", "chat_participants", "messages", "conversations", "attachments", "reactions"]
+        counts: Dict[str, int] = {}
+        for t in tables:
+            try:
+                counts[t] = int(cur.execute(f"SELECT COUNT(*) AS c FROM {t}").fetchone()["c"])
+            except Exception:
+                counts[t] = -1
+
+        # Watermarks
+        watermarks: Dict[str, Any] = {}
+        try:
+            rows = cur.execute("SELECT key, value FROM live_sync_state").fetchall()
+            watermarks = {r["key"]: r["value"] for r in rows}
+        except Exception:
+            watermarks = {}
+
+    payload = {
+        "ok": True,
+        "app_dir": str(Path(db_path).parent),
+        "db_path": db_path,
+        "counts": counts,
+        "live_sync_state": watermarks,
+    }
+    _print_json(payload, pretty=args.pretty)
+    return 0
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    """
+    One-shot ETL sync from source chat.db into eve.db.
+    """
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import settings, configure_logging  # type: ignore
+    from backend.startup import database as startup_db  # type: ignore
+    from backend.etl.data_importer import import_live_data, get_live_chat_db_path  # type: ignore
+    configure_logging(force=True)
+
+    # Ensure schema exists
+    asyncio.run(startup_db.apply_migrations())
+
+    # Capture a source watermark boundary BEFORE importing so we never miss messages
+    # that arrive while the ETL is running.
+    source_db = os.getenv("EVE_SOURCE_CHAT_DB") or get_live_chat_db_path()
+    boundary_msg_rowid = 0
+    boundary_att_rowid = 0
+    boundary_ts_ns = 0
+
+    def _to_nanos(raw: int) -> int:
+        if raw is None:
+            return 0
+        try:
+            raw = int(raw)
+        except Exception:
+            return 0
+        if raw > 1e16:  # already ns
+            return raw
+        if raw > 1e13:  # µs -> ns
+            return raw * 1_000
+        if raw > 1e10:  # ms -> ns
+            return raw * 1_000_000
+        return raw * 1_000_000_000  # seconds -> ns
+
+    try:
+        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+            cur = conn.cursor()
+            boundary_msg_rowid = int((cur.execute("SELECT MAX(ROWID) FROM message").fetchone() or [0])[0] or 0)
+            boundary_att_rowid = int((cur.execute("SELECT MAX(ROWID) FROM attachment").fetchone() or [0])[0] or 0)
+            raw_ts = (cur.execute("SELECT MAX(date) FROM message").fetchone() or [0])[0] or 0
+            boundary_ts_ns = _to_nanos(raw_ts)
+    except Exception:
+        # Best-effort: if we can't read source DB, we'll still run the ETL.
+        boundary_msg_rowid = 0
+        boundary_att_rowid = 0
+        boundary_ts_ns = 0
+
+    # Keep stdout clean (ETL prints progress)
+    with contextlib.redirect_stdout(sys.stderr):
+        import_live_data(since_date=None, race_mode=args.race_mode, include_contacts=not args.no_contacts)
+
+    # Persist live-sync watermarks so `eve watch` can pick up incremental updates reliably.
+    try:
+        from backend.etl.live_sync.state import (  # type: ignore
+            get_message_rowid_watermark,
+            get_attachment_rowid_watermark,
+            get_watermark,
+            set_message_rowid_watermark,
+            set_attachment_rowid_watermark,
+            set_watermark,
+        )
+
+        current_msg = int(get_message_rowid_watermark() or 0)
+        current_att = int(get_attachment_rowid_watermark() or 0)
+        current_ts = int(get_watermark() or 0)
+
+        if boundary_msg_rowid:
+            set_message_rowid_watermark(max(current_msg, boundary_msg_rowid))
+        if boundary_att_rowid:
+            set_attachment_rowid_watermark(max(current_att, boundary_att_rowid))
+        if boundary_ts_ns:
+            set_watermark(max(current_ts, boundary_ts_ns))
+    except Exception:
+        pass
+
+    payload = {
+        "ok": True,
+        "app_dir": str(settings.app_dir),
+        "db_path": str(settings.db_path),
+        "source_chat_db": os.getenv("EVE_SOURCE_CHAT_DB"),
+        "live_sync_boundary": {
+            "message_rowid": boundary_msg_rowid,
+            "attachment_rowid": boundary_att_rowid,
+            "timestamp_ns": boundary_ts_ns,
+        },
+    }
+    _print_json(payload, pretty=args.pretty)
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """
+    Run the live-sync loop (optionally bounded for testing).
+    """
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    from backend.config import configure_logging  # type: ignore
+    from backend.startup import database as startup_db  # type: ignore
+    from backend.etl.live_sync.wal import watch  # type: ignore
+    configure_logging(force=True)
+
+    # Ensure schema exists
+    asyncio.run(startup_db.apply_migrations())
+
+    result = asyncio.run(
+        watch(
+            source_chat_db=os.getenv("EVE_SOURCE_CHAT_DB"),
+            polling_interval_s=(args.poll_interval_ms / 1000.0),
+            enable_contact_sync=not args.no_contacts,
+            enable_conversation_tracking=not args.no_conversation_tracking,
+            stop_after_seconds=args.seconds,
+            max_batches=args.max_batches,
+        )
+    )
+
+    _print_json(result, pretty=args.pretty)
+    return 0
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """
+    Migrate an existing ChatStats central.db into Eve's eve.db location.
+    """
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    import shutil
+
+    from backend.config import settings, configure_logging  # type: ignore
+    from backend.startup import database as startup_db  # type: ignore
+
+    configure_logging(force=True)
+
+    app_dir = Path(settings.app_dir)
+    app_dir.mkdir(parents=True, exist_ok=True)
+    target_db = Path(settings.db_path)
+
+    if target_db.exists() and not args.force:
+        _print_json(
+            {"ok": False, "error": "target_exists", "db_path": str(target_db)},
+            pretty=args.pretty,
+        )
+        return 2
+
+    # Default source is legacy ChatStats location.
+    default_src = Path.home() / "Library" / "Application Support" / "ChatStats" / "central.db"
+    src_db = Path(os.path.expanduser(args.from_db or str(default_src)))
+
+    if not src_db.exists():
+        _print_json(
+            {"ok": False, "error": "source_missing", "from_db": str(src_db)},
+            pretty=args.pretty,
+        )
+        return 2
+
+    # Ensure the source DB is checkpointed so copying is consistent.
+    try:
+        with sqlite3.connect(str(src_db), timeout=5.0) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.commit()
+    except Exception:
+        # Best-effort; copying may still succeed if WAL isn't present.
+        pass
+
+    target_db.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_db, target_db)
+
+    # Upgrade schema as needed in the new location.
+    asyncio.run(startup_db.apply_migrations())
+
+    _print_json(
+        {
+            "ok": True,
+            "from_db": str(src_db),
+            "db_path": str(target_db),
+            "migrated": True,
+        },
+        pretty=args.pretty,
+    )
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    # Common options are implemented as a parent parser so they can appear
+    # either before or after the subcommand (argparse doesn't support "global
+    # options anywhere" without this pattern).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--app-dir", help="Override Eve app dir (default: ~/Library/Application Support/Eve)")
+    common.add_argument("--source-chat-db", help="Override source chat.db path (default: ~/Library/Messages/chat.db)")
+    common.add_argument("--sqlite-busy-timeout-ms", type=int, help="Override SQLite busy timeout (ms)")
+    common.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
+
+    p = argparse.ArgumentParser(prog="eve", description="Eve CLI", parents=[common])
+
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("paths", help="Print computed paths (app dir, db path)", parents=[common]).set_defaults(func=cmd_paths)
+    sub.add_parser("init", help="Initialize eve.db (run migrations)", parents=[common]).set_defaults(func=cmd_init)
+    sub.add_parser("status", help="Print database counts + live sync state", parents=[common]).set_defaults(func=cmd_status)
+
+    psync = sub.add_parser("sync", help="Run one-shot ETL import from chat.db into eve.db", parents=[common])
+    psync.add_argument("--race-mode", action="store_true", help="Enable race mode for first import (unsafe PRAGMAs)")
+    psync.add_argument("--no-contacts", action="store_true", help="Skip AddressBook contact import")
+    psync.set_defaults(func=cmd_sync)
+
+    pw = sub.add_parser("watch", help="Run live sync watcher (bounded for tests via --seconds/--max-batches)", parents=[common])
+    pw.add_argument("--seconds", type=float, default=None, help="Stop after N seconds")
+    pw.add_argument("--max-batches", type=int, default=None, help="Stop after N processed batches")
+    pw.add_argument("--poll-interval-ms", type=int, default=50, help="Filesystem poll interval (ms)")
+    pw.add_argument("--no-contacts", action="store_true", help="Disable periodic AddressBook contact syncing")
+    pw.add_argument("--no-conversation-tracking", action="store_true", help="Disable Redis-backed conversation sealing/tracking")
+    pw.set_defaults(func=cmd_watch)
+
+    pm = sub.add_parser("migrate", help="Copy ChatStats central.db into Eve eve.db location and run migrations", parents=[common])
+    pm.add_argument("--from-db", default=None, help="Path to legacy ChatStats central.db (defaults to ChatStats location)")
+    pm.add_argument("--force", action="store_true", help="Overwrite target eve.db if it exists")
+    pm.set_defaults(func=cmd_migrate)
+
+    return p
+
+
+def main() -> int:
+    _maybe_reexec_into_venv()
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        return int(args.func(args))
+    except KeyboardInterrupt:
+        _print_json({"ok": False, "error": "interrupted"}, pretty=getattr(args, "pretty", False))
+        return 130
+    except Exception as e:
+        # Debugging: keep stdout machine-readable, but emit traceback to stderr.
+        try:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+        except Exception:
+            pass
+        # Keep stdout machine-readable on unexpected errors.
+        _print_json({"ok": False, "error": "exception", "message": str(e)}, pretty=getattr(args, "pretty", False))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+

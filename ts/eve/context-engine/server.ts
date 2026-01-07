@@ -145,10 +145,12 @@ export function createServer(baseDir: string) {
 
     // Log database paths for debugging (especially in tests)
     const appDir =
-      process.env.CHATSTATS_APP_DIR || path.join(os.homedir(), 'Library', 'Application Support', 'ChatStats');
+      process.env.EVE_APP_DIR ||
+      process.env.CHATSTATS_APP_DIR ||
+      path.join(os.homedir(), 'Library', 'Application Support', 'Eve');
     console.log('[EVE] ========================================');
     console.log('[EVE] Using appDir:', appDir);
-    console.log('[EVE] central.db:', path.join(appDir, 'central.db'));
+    console.log('[EVE] eve.db:', path.join(appDir, 'eve.db'));
     console.log('[EVE] transpileCache:', process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH || '(default)');
     console.log('[EVE] ========================================');
   });

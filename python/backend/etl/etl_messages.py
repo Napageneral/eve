@@ -11,6 +11,9 @@ from time import time
 logger = logging.getLogger(__name__)
 
 def get_live_chat_db_path() -> str:
+    override = os.getenv("EVE_SOURCE_CHAT_DB") or os.getenv("CHATSTATS_SOURCE_CHAT_DB")
+    if override:
+        return os.path.expanduser(override)
     home = os.path.expanduser('~')
     return os.path.join(home, 'Library', 'Messages', 'chat.db')
 
@@ -35,7 +38,10 @@ def etl_messages(source_db: str, since_date: Optional[datetime] = None, race_mod
     imported_count, skipped_count = load_messages(transformed_messages, race_mode=race_mode)
     t = log_time(t, "Load completed")
     
-    if source_db == get_live_chat_db_path():
+    # Only try to infer the "Me" contact from account_login when reading the real macOS Messages DB.
+    # In tests/fixtures we often override the source path via EVE_SOURCE_CHAT_DB, and those fixtures
+    # won't have the account_login columns/tables.
+    if not os.getenv("EVE_SOURCE_CHAT_DB") and source_db == get_live_chat_db_path():
         update_user_contact_from_account_login(source_db)
     
     logger.info(f"Message ETL complete. Imported: {imported_count}, Skipped: {skipped_count}")

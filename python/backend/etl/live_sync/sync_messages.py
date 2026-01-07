@@ -1,4 +1,5 @@
 import sqlite3
+import os
 import logging
 from typing import List, Dict, Tuple, Set, Optional
 from datetime import datetime, timezone, timedelta
@@ -463,8 +464,13 @@ def sync_messages(new_rows: List[Dict]) -> Tuple[int, Dict[int, int]]:
         # Commit all database operations before triggering analysis
         session.commit()
         
-        # Trigger live analysis via Celery task (reliable) instead of Redis events (unreliable)
-        if chat_counts and imported_count > 0:
+        # Trigger live analysis via Celery task (optional compute plane).
+        # Default OFF for CLI-first / local-only mode.
+        # IMPORTANT: don't fall back to legacy CHATSTATS_* env vars here.
+        # If a user has old env vars set in their shell, we don't want Eve's
+        # CLI/watch to silently start dispatching Celery tasks.
+        trigger_compute = os.getenv("EVE_ENABLE_COMPUTE_PLANE", "0").lower() in ("1", "true", "yes", "on")
+        if trigger_compute and chat_counts and imported_count > 0:
             try:
                 # Import and trigger Celery task directly
                 from backend.celery_service.tasks.live_analysis import handle_new_messages_synced_task

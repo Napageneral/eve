@@ -33,6 +33,9 @@ def to_nanos(raw: int) -> int:
 
 def get_live_chat_db_path() -> str:
     """Get the path to the live Messages database."""
+    override = os.getenv("EVE_SOURCE_CHAT_DB") or os.getenv("CHATSTATS_SOURCE_CHAT_DB")
+    if override:
+        return os.path.expanduser(override)
     home = os.path.expanduser('~')
     return os.path.join(home, 'Library', 'Messages', 'chat.db')
 

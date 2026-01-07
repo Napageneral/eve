@@ -72,7 +72,7 @@ def initialize_database_safely(db_path: str, clean_start: bool = False) -> None:
             # Enable WAL mode for better concurrency
             conn.execute("PRAGMA journal_mode=WAL")
             try:
-                busy_ms = int(os.getenv("CHATSTATS_SQLITE_BUSY_TIMEOUT_MS", "60000"))
+                busy_ms = int(os.getenv("EVE_SQLITE_BUSY_TIMEOUT_MS") or os.getenv("CHATSTATS_SQLITE_BUSY_TIMEOUT_MS") or "60000")
             except Exception:
                 busy_ms = 60000
             conn.execute(f"PRAGMA busy_timeout={busy_ms}")

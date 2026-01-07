@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Constants
 DEBOUNCE_MS = 50
-LIVE_DB = get_live_chat_db_path()
 APPLE_UNIX_EPOCH_DIFF_NS = 978307200 * 1_000_000_000
 
 async def poll_for_changes(queue: asyncio.Queue, db_path: str, wal_path: str, polling_interval_s: float):
@@ -177,12 +176,20 @@ async def check_expired_conversations_startup():
             if cleanup_count > 0:
                 logger.debug(f"[LiveSync] Cleaned up {cleanup_count} stale conversation checks on startup")
         except Exception as cleanup_error:
-            logger.error(f"[LiveSync] Error during startup cleanup: {cleanedup_error}", exc_info=True)
+            logger.error(f"[LiveSync] Error during startup cleanup: {cleanup_error}", exc_info=True)
             
     except Exception as e:
         logger.error(f"[LiveSync] Error in background expired conversation check: {e}", exc_info=True)
 
-async def watch():
+async def watch(
+    *,
+    source_chat_db: Optional[str] = None,
+    polling_interval_s: float = 0.05,
+    enable_contact_sync: bool = True,
+    enable_conversation_tracking: bool = True,
+    stop_after_seconds: Optional[float] = None,
+    max_batches: Optional[int] = None,
+) -> dict:
     """
     Main watcher function that monitors chat.db for changes and triggers synchronization.
     """
@@ -192,7 +199,7 @@ async def watch():
     # 2) Database latch (historic_analysis_status)
     async def _is_global_analysis_running() -> bool:
         try:
-            if os.getenv("CHATSTATS_BULK_ANALYSIS_RUNNING", "0").lower() in ("1", "true", "yes", "on"):
+            if (os.getenv("EVE_BULK_ANALYSIS_RUNNING") or os.getenv("CHATSTATS_BULK_ANALYSIS_RUNNING") or "0").lower() in ("1", "true", "yes", "on"):
                 return True
         except Exception:
             pass
@@ -230,17 +237,42 @@ async def watch():
     except Exception:
         # If waiting fails, proceed to start and rely on per-batch gate below
         pass
+    # If caller provided an explicit DB path (tests/CLI), set env override early so
+    # downstream extractors use it consistently.
+    if source_chat_db:
+        os.environ["EVE_SOURCE_CHAT_DB"] = os.path.expanduser(source_chat_db)
+
+        # Reset persistent extractor connection so it re-opens against the override.
+        try:
+            from . import extractors as _extractors
+            if getattr(_extractors, "LIVE_DB_CONNECTION", None) is not None:
+                try:
+                    _extractors.LIVE_DB_CONNECTION.close()
+                except Exception:
+                    pass
+                _extractors.LIVE_DB_CONNECTION = None
+        except Exception:
+            pass
+
+    live_db = get_live_chat_db_path()
     change_queue: asyncio.Queue = asyncio.Queue()
-    
-    wal_file_path = LIVE_DB + "-wal"
-    polling_interval_s = 0.05
+    wal_file_path = live_db + "-wal"
 
     # Start background tasks
-    poller_task = asyncio.create_task(poll_for_changes(change_queue, LIVE_DB, wal_file_path, polling_interval_s))
-    contact_sync_task = asyncio.create_task(periodic_contact_sync())
-    startup_check_task = asyncio.create_task(check_expired_conversations_startup())
+    poller_task = asyncio.create_task(poll_for_changes(change_queue, live_db, wal_file_path, polling_interval_s))
+    contact_sync_task = asyncio.create_task(periodic_contact_sync()) if enable_contact_sync else None
+    startup_check_task = asyncio.create_task(check_expired_conversations_startup()) if enable_conversation_tracking else None
     
-    # Initialize watermarks
+    # Initialize watermarks if needed (mirrors FastAPI startup behavior)
+    try:
+        from .state import initialize_watermark_if_missing, initialize_rowid_watermarks_if_missing
+        await asyncio.to_thread(initialize_watermark_if_missing)
+        await asyncio.to_thread(initialize_rowid_watermarks_if_missing)
+    except Exception:
+        # Best-effort: continue even if initialization fails
+        pass
+
+    # Load current watermarks
     current_watermark_ns = get_watermark() or 0
     current_message_rowid = get_message_rowid_watermark()
     current_attachment_rowid = get_attachment_rowid_watermark()
@@ -249,9 +281,30 @@ async def watch():
     
     last_sync_time = 0.0
     
+    batches_processed = 0
+    total_imported = 0
+    started_monotonic = time.monotonic()
+
+    # Kick an initial batch so we catch any messages that arrived while Eve was offline
+    # (or between `eve sync` and `eve watch`).
+    try:
+        change_queue.put_nowait(time.time())
+    except Exception:
+        pass
+
     try:
         while True:
-            _ = await change_queue.get()
+            # If bounded, don't block forever waiting for an event.
+            if stop_after_seconds is not None:
+                remaining = stop_after_seconds - (time.monotonic() - started_monotonic)
+                if remaining <= 0:
+                    break
+                try:
+                    _ = await asyncio.wait_for(change_queue.get(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+            else:
+                _ = await change_queue.get()
             logger.debug("[LiveSync] BATCH dequeued (debounce=%dms)", DEBOUNCE_MS)
 
             # Re-check analysis latch periodically to avoid contention mid-run
@@ -314,26 +367,28 @@ async def watch():
                     current_message_rowid = new_message_rowid
                     set_message_rowid_watermark(current_message_rowid)
                     logger.debug("[LiveSync] WATERMARK commit rowid %s→%s", prev_rowid, current_message_rowid)
-                    
-                    # Update conversation tracking
-                    if imported_count > 0:
+
+                    total_imported += int(batch_imported or 0)
+
+                    # Update conversation tracking (optional: requires Redis)
+                    if enable_conversation_tracking and imported_count > 0:
                         with timed("update_conversation_tracking", timings):
                             try:
                                 chat_latest_timestamps = {}
-                                
+
                                 for msg in new_messages:
                                     chat_id = msg.get('chat_id')
                                     if not chat_id:
                                         continue
-                                        
+
                                     if isinstance(msg.get('date'), (int, float)):
                                         apple_ns = msg['date']
                                         unix_ns = apple_ns + APPLE_UNIX_EPOCH_DIFF_NS
                                         msg_timestamp = datetime.fromtimestamp(unix_ns / 1_000_000_000, tz=timezone.utc)
-                                        
+
                                         if chat_id not in chat_latest_timestamps or msg_timestamp > chat_latest_timestamps[chat_id]:
                                             chat_latest_timestamps[chat_id] = msg_timestamp
-                                
+
                                 if chat_latest_timestamps:
                                     await asyncio.to_thread(
                                         conversation_tracker.batch_update_last_messages,
@@ -341,7 +396,7 @@ async def watch():
                                     )
                             except Exception as e:
                                 logger.error(f"Error updating conversation tracking: {e}", exc_info=True)
-                    
+
                     # Update timestamp watermark
                     if imported_count > 0:
                         valid_message_dates_ns = [m['date'] for m in new_messages if isinstance(m.get('date'), int)]
@@ -373,6 +428,12 @@ async def watch():
                         total_ms,
                     )
 
+                batches_processed += 1
+                if max_batches is not None and batches_processed >= max_batches:
+                    break
+                if stop_after_seconds is not None and (time.monotonic() - started_monotonic) >= stop_after_seconds:
+                    break
+
             except Exception as e:
                 logger.error(f"Error in live sync processing loop: {e}", exc_info=True)
     
@@ -395,6 +456,16 @@ async def watch():
                     logger.debug(f"[{task_name.title()}] Task cancelled as expected")
                 except Exception as e:
                     logger.error(f"[{task_name.title()}] Error during task shutdown: {e}", exc_info=True)
+
+    return {
+        "ok": True,
+        "source_chat_db": live_db,
+        "batches": batches_processed,
+        "imported_messages": total_imported,
+        "message_rowid_watermark": current_message_rowid,
+        "attachment_rowid_watermark": current_attachment_rowid,
+        "timestamp_watermark_ns": current_watermark_ns,
+    }
 
 async def start_watcher():
     """Helper function to start the watcher."""

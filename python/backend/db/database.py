@@ -28,7 +28,7 @@ def init_engine(database_url=None, clean_start=False):
     is_sqlite = database_url.startswith('sqlite:')
     # Busy timeout (ms) used for PRAGMA and native connect timeout
     try:
-        busy_ms = int(os.getenv("CHATSTATS_SQLITE_BUSY_TIMEOUT_MS", "15000"))
+        busy_ms = int(os.getenv("EVE_SQLITE_BUSY_TIMEOUT_MS") or os.getenv("CHATSTATS_SQLITE_BUSY_TIMEOUT_MS") or "15000")
     except Exception:
         busy_ms = 15000
     engine = create_engine(
@@ -42,7 +42,7 @@ def init_engine(database_url=None, clean_start=False):
             "timeout": (busy_ms / 1000.0),
         } if is_sqlite else {},
     )
-    print(f"Initialized engine with database at {database_url}", flush=True)
+    logger.info("Initialized engine with database at %s", database_url)
     
     # Additional SQLite optimization for better concurrent access
     if database_url.startswith('sqlite:'):

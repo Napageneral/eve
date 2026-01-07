@@ -1,4 +1,4 @@
-"""Root logging configuration for the ChatStats backend.
+"""Root logging configuration for the Eve backend.
 
 This centralises *all* logger setup so that the rest of the codebase can
 simply call::
@@ -147,7 +147,10 @@ def configure_logging(*, force: bool = False) -> None:  # noqa: D401 (simple fun
     # ------------------------------------------------------------------
     # Console handler ---------------------------------------------------
     # ------------------------------------------------------------------
-    console_handler = logging.StreamHandler(sys.stdout)
+    # For CLI usage we keep JSON output on stdout and send logs to stderr.
+    # The Electron app (ChatStats legacy) expects stdout. Allow env override.
+    log_to_stderr = os.getenv("EVE_LOG_TO_STDERR", "0").lower() in ("1", "true", "yes", "on")
+    console_handler = logging.StreamHandler(sys.stderr if log_to_stderr else sys.stdout)
     console_handler.setFormatter(ColorFormatter(LOG_FORMAT, use_color=True))
 
     # Attach handlers (replacing same-type ones when *force* is True)
@@ -161,7 +164,7 @@ def configure_logging(*, force: bool = False) -> None:  # noqa: D401 (simple fun
 
     # Duplicate ERROR-and-above to stderr so external supervisors (Electron) reliably capture them
     try:
-        attach_stderr = os.getenv("CHATSTATS_STDERR_ERRORS", "1").lower() in ("1", "true", "yes")
+        attach_stderr = (os.getenv("EVE_STDERR_ERRORS") or os.getenv("CHATSTATS_STDERR_ERRORS") or "1").lower() in ("1", "true", "yes")
     except Exception:
         attach_stderr = True
     if attach_stderr:
@@ -175,18 +178,18 @@ def configure_logging(*, force: bool = False) -> None:  # noqa: D401 (simple fun
     # already set earlier to ``settings.log_level``; avoid clobbering it back to
     # WARNING so that backend.* INFO logs continue to flow to stdout (and through
     # the Electron bridge).
-    backend_level = os.getenv("CHATSTATS_BACKEND_LOG_LEVEL", settings.log_level).upper()
+    backend_level = (os.getenv("EVE_BACKEND_LOG_LEVEL") or os.getenv("CHATSTATS_BACKEND_LOG_LEVEL") or settings.log_level).upper()
     logging.getLogger("backend").setLevel(getattr(logging, backend_level, logging.INFO))
 
     # Noisy third-party loggers → WARNING/ERROR
     for noisy in ("httpx", "httpcore", "celery.worker.consumer.mingle", "celery.apps.worker", "celery.worker.strategy", "celery.app.trace"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     # LiteLLM often logs via multiple names; default to WARNING but allow override via env
-    litellm_level = os.getenv("CHATSTATS_LITELLM_LOG_LEVEL", "WARNING").upper()
+    litellm_level = (os.getenv("EVE_LITELLM_LOG_LEVEL") or os.getenv("CHATSTATS_LITELLM_LOG_LEVEL") or "WARNING").upper()
     for name in ("litellm", "LiteLLM", "litellm.logging"):
         logging.getLogger(name).setLevel(getattr(logging, litellm_level, logging.WARNING))
     # Redirected stdout/stderr (e.g., LiteLLM banners) – allow env override
-    redirected_level = os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL", os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL", "ERROR")).upper()
+    redirected_level = (os.getenv("EVE_REDIRECTED_LOG_LEVEL") or os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL") or os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL") or "ERROR").upper()
     logging.getLogger("celery.redirected").setLevel(getattr(logging, redirected_level, logging.ERROR))
 
     # Make uvicorn log through the root logger so everything follows the same

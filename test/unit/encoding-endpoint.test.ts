@@ -4,7 +4,7 @@
  * Tests the /engine/encode endpoint that the compute plane uses to encode
  * conversations for analysis/embeddings.
  *
- * This suite creates a tiny central.db fixture so it runs without any user data.
+ * This suite creates a tiny eve.db fixture so it runs without any user data.
  */
 
 import * as path from 'path';
@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../..');
 
 async function createCentralDbFixture(appDir: string) {
-  const dbPath = path.join(appDir, 'central.db');
+  const dbPath = path.join(appDir, 'eve.db');
   const db = new Database(dbPath);
 
   db.exec(`
