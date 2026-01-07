@@ -222,3 +222,95 @@ def load_chats(chats_and_participants: List[Tuple[Dict, List[Dict]]]) -> Dict[st
                 print(f"Error processing chat {chat['chat_identifier']}: {e}")
                 continue
         return stats
+
+
+def ensure_chat_participants_from_chat_identifiers() -> Dict[str, int]:
+    """Backfill chat participants based on each chat's normalized chat_identifier.
+
+    This is especially important for CLI runs that skip AddressBook ETL:
+    - We still want `chat_participants` populated so chats can be queried by participant/contact.
+    - We can create "basic" contacts for identifiers that don't exist yet.
+
+    This function is idempotent (uses INSERT OR IGNORE).
+    """
+    stats = {"created_contacts": 0, "inserted_participants": 0, "updated_chat_names": 0}
+
+    with db.session_scope() as session:
+        cursor = session.connection().connection.cursor()
+
+        # Build identifier -> contact_id map
+        cursor.execute("SELECT contact_id, identifier FROM contact_identifiers WHERE identifier IS NOT NULL")
+        ident_to_contact = {row[1]: int(row[0]) for row in cursor.fetchall() if row and row[1]}
+
+        # Iterate chats
+        cursor.execute("SELECT id, chat_identifier, chat_name, is_group FROM chats")
+        rows = cursor.fetchall()
+
+        for chat_id, chat_identifier, chat_name, is_group in rows:
+            if not chat_identifier:
+                continue
+            identifiers = [s for s in str(chat_identifier).split(",") if s]
+            if not identifiers:
+                continue
+
+            participant_contact_ids: list[int] = []
+
+            for ident in identifiers:
+                contact_id = ident_to_contact.get(ident)
+                if not contact_id:
+                    # Create a minimal contact so the DB remains queryable by identifier.
+                    cursor.execute(
+                        "INSERT INTO contacts (name, data_source) VALUES (?, ?)",
+                        (ident, "chat_identifier_participant"),
+                    )
+                    contact_id = int(cursor.lastrowid)
+                    ident_type = "Email" if "@" in ident else "Phone"
+                    cursor.execute(
+                        """
+                        INSERT INTO contact_identifiers (contact_id, identifier, type, is_primary)
+                        VALUES (?, ?, ?, 1)
+                        """,
+                        (contact_id, ident, ident_type),
+                    )
+                    ident_to_contact[ident] = contact_id
+                    stats["created_contacts"] += 1
+
+                participant_contact_ids.append(int(contact_id))
+
+                cursor.execute(
+                    "INSERT OR IGNORE INTO chat_participants (chat_id, contact_id) VALUES (?, ?)",
+                    (int(chat_id), int(contact_id)),
+                )
+                # rowcount is 1 for insert, 0 for ignore (sqlite)
+                try:
+                    if cursor.rowcount:
+                        stats["inserted_participants"] += int(cursor.rowcount)
+                except Exception:
+                    pass
+
+            # For 1:1 chats, keep chat_name in sync with the contact name (if name is missing or looks like an identifier)
+            if (not is_group) and len(participant_contact_ids) == 1:
+                cid = participant_contact_ids[0]
+                cursor.execute("SELECT name FROM contacts WHERE id = ?", (cid,))
+                r = cursor.fetchone()
+                contact_name = r[0] if r else None
+                if contact_name:
+                    current = chat_name or ""
+                    clean = (
+                        str(current)
+                        .replace("+", "")
+                        .replace("-", "")
+                        .replace(" ", "")
+                        .replace("(", "")
+                        .replace(")", "")
+                    )
+                    looks_like_number = clean.isdigit()
+                    should_update = (not current) or (current == chat_identifier) or looks_like_number
+                    if should_update and current != contact_name:
+                        cursor.execute(
+                            "UPDATE chats SET chat_name = ? WHERE id = ?",
+                            (contact_name, int(chat_id)),
+                        )
+                        stats["updated_chat_names"] += 1
+
+    return stats

@@ -395,7 +395,8 @@ def load_single_contact_with_updates(transformed_contact: Dict) -> Optional[int]
 
 def update_chat_names_for_contact(contact_id: int, new_name: str) -> None:
     """Update chat names for chats where this contact is the only other participant."""
-    logger.info(f"Updating chat names for contact {contact_id} with new name '{new_name}'")
+    # Don't log contact names (PII) at INFO level.
+    logger.info("Updating chat names for contact %s", contact_id)
     
     with db.session_scope() as session:
         cursor = session.connection().connection.cursor()
@@ -443,7 +444,7 @@ def update_chat_names_for_contact(contact_id: int, new_name: str) -> None:
                     (new_name, chat_id)
                 )
                 updated_count += 1
-                logger.info(f"Updated chat {chat_id} name to '{new_name}'")
+                logger.info("Updated chat %s name", chat_id)
         
         if updated_count > 0:
             logger.info(f"Updated {updated_count} chat names for contact {contact_id}")

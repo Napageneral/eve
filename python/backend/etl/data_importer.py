@@ -5,7 +5,7 @@ from typing import Optional
 from time import time
 
 from backend.etl.etl_contacts import etl_contacts, etl_live_contacts
-from backend.etl.etl_chats import etl_chats
+from backend.etl.etl_chats import etl_chats, ensure_chat_participants_from_chat_identifiers
 from backend.etl.etl_conversations import (
     etl_conversations,                      # Incremental or “from-scratch” forward logic
     etl_conversations_fresh_split_compare   # Our “backup import” approach
@@ -180,6 +180,17 @@ def import_live_data(
         t = time()
         etl_messages(sms_db_path, since_date, race_mode=race_mode)
         print(f"[Live] Messages ETL:      {round(time() - t, 2):>6}s")
+
+        # Backfill chat participants now that contacts exist (even if AddressBook ETL was skipped).
+        t = time()
+        try:
+            stats = ensure_chat_participants_from_chat_identifiers()
+            print(
+                f"[Live] Chat participants backfill: {round(time() - t, 2):>6}s "
+                f"(created_contacts={stats.get('created_contacts')}, inserted_participants={stats.get('inserted_participants')}, updated_chat_names={stats.get('updated_chat_names')})"
+            )
+        except Exception as e:
+            logger.warning(f"Chat participants backfill failed: {e}")
 
         # Ensure indexes *before* conversations so they can leverage (chat_id, timestamp)
         t = time()
