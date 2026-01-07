@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import os
 import sqlite3
 import logging
 from typing import List, Dict, Tuple, Optional
@@ -40,8 +41,14 @@ def extract_chats(source_db: str) -> List[Dict]:
     GROUP BY c.ROWID
     """
     try:
-        # Read-only + immutable hints speed up reads of Apple's DB
-        with sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True) as conn:
+        # Read-only + immutable hints speed up snapshot DB reads, but the live macOS
+        # Messages database uses WAL; immutable=1 can miss recent rows.
+        home_live = os.path.abspath(os.path.join(os.path.expanduser("~"), "Library", "Messages", "chat.db"))
+        is_live = os.path.abspath(source_db) == home_live
+        uri = f"file:{source_db}?mode=ro"
+        if not is_live:
+            uri += "&immutable=1"
+        with sqlite3.connect(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(query)

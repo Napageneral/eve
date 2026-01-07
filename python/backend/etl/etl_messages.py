@@ -75,7 +75,13 @@ def extract_messages(source_db: str, since_date: Optional[datetime] = None) -> L
     # No ORDER BY here – we don't need sort at extract; we'll sort inside our DB for conversations.
     query += " GROUP BY m.ROWID"
     try:
-        with sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True) as conn:
+        # IMPORTANT: only use immutable=1 for static snapshot DBs. The live macOS Messages
+        # database uses WAL; immutable=1 can cause us to miss recent rows.
+        is_live = os.path.abspath(source_db) == os.path.abspath(get_live_chat_db_path())
+        uri = f"file:{source_db}?mode=ro"
+        if not is_live:
+            uri += "&immutable=1"
+        with sqlite3.connect(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             # Fast read-only pragmas
             try:
@@ -163,7 +169,11 @@ def _build_chat_identifier_map(source_db: str) -> Dict[int, str]:
 def _build_handle_map(source_db: str) -> Dict[int, str]:
     """ROWID -> handle.id (phone/email)"""
     mapping: Dict[int, str] = {}
-    with sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True) as conn:
+    is_live = os.path.abspath(source_db) == os.path.abspath(get_live_chat_db_path())
+    uri = f"file:{source_db}?mode=ro"
+    if not is_live:
+        uri += "&immutable=1"
+    with sqlite3.connect(uri, uri=True) as conn:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA query_only=ON")
