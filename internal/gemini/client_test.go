@@ -56,14 +56,14 @@ func TestGenerateContent_Success(t *testing.T) {
 	// For testing, we'll make a request and verify the client works
 	// We need to intercept the actual URL generation
 	// Let's use a simpler approach: override the httpClient
-	client.httpClient = server.Client()
+	client.HttpClient = server.Client()
 
 	// Make request - we'll test with a mock by using custom transport
 	// For now, let's verify the client initializes correctly
 	if client.apiKey != "test-api-key" {
 		t.Errorf("expected API key test-api-key, got %s", client.apiKey)
 	}
-	if client.httpClient == nil {
+	if client.HttpClient == nil {
 		t.Error("expected non-nil HTTP client")
 	}
 }
@@ -326,12 +326,12 @@ func TestNewClient(t *testing.T) {
 		t.Errorf("expected API key my-api-key, got %s", client.apiKey)
 	}
 
-	if client.httpClient == nil {
+	if client.HttpClient == nil {
 		t.Fatal("expected non-nil HTTP client")
 	}
 
 	// Verify transport is configured correctly
-	transport, ok := client.httpClient.Transport.(*http.Transport)
+	transport, ok := client.HttpClient.Transport.(*http.Transport)
 	if !ok {
 		t.Fatal("expected *http.Transport")
 	}
@@ -348,8 +348,8 @@ func TestNewClient(t *testing.T) {
 		t.Error("expected ForceAttemptHTTP2 to be true")
 	}
 
-	if client.httpClient.Timeout != defaultTimeout {
-		t.Errorf("expected timeout %v, got %v", defaultTimeout, client.httpClient.Timeout)
+	if client.HttpClient.Timeout != defaultTimeout {
+		t.Errorf("expected timeout %v, got %v", defaultTimeout, client.HttpClient.Timeout)
 	}
 }
 

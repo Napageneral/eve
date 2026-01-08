@@ -25,7 +25,7 @@ const (
 
 // Client is a Gemini API client with HTTP/2 support and retries
 type Client struct {
-	httpClient *http.Client
+	HttpClient *http.Client // Exported for testing
 	apiKey     string
 }
 
@@ -39,13 +39,13 @@ func NewClient(apiKey string) *Client {
 		ForceAttemptHTTP2:   true, // Enable HTTP/2
 	}
 
-	httpClient := &http.Client{
+	HttpClient := &http.Client{
 		Transport: transport,
 		Timeout:   defaultTimeout,
 	}
 
 	return &Client{
-		httpClient: httpClient,
+		HttpClient: HttpClient,
 		apiKey:     apiKey,
 	}
 }
@@ -136,7 +136,7 @@ func (c *Client) GenerateContent(model string, req *GenerateContentRequest) (*Ge
 
 		httpReq.Header.Set("Content-Type", "application/json")
 
-		resp, err := c.httpClient.Do(httpReq)
+		resp, err := c.HttpClient.Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("request failed: %w", err)
 			if isRetryable(err, 0) {
@@ -206,7 +206,7 @@ func (c *Client) EmbedContent(req *EmbedContentRequest) (*EmbedContentResponse, 
 
 		httpReq.Header.Set("Content-Type", "application/json")
 
-		resp, err := c.httpClient.Do(httpReq)
+		resp, err := c.HttpClient.Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("request failed: %w", err)
 			if isRetryable(err, 0) {
