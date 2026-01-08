@@ -297,20 +297,34 @@ def load_conversations(conversations: List[Dict], chat_id: Optional[int] = None,
                     conv['message_ids']
                 ))
 
-        # Insert new conversations and capture IDs
+        # Insert new conversations and capture IDs (idempotent via unique index)
         if conv_inserts:
             for (chat_id_, initiator_id_, start_, end_, msg_cnt_, gap_, msg_ids_) in conv_inserts:
-                new_id = session.execute(text("""
-                    INSERT INTO conversations
+                # Use INSERT OR IGNORE to handle duplicates from re-runs
+                result = session.execute(text("""
+                    INSERT OR IGNORE INTO conversations
                     (chat_id, initiator_id, start_time, end_time, message_count, gap_threshold)
                     VALUES (:chat_id, :initiator_id, :start_time, :end_time, :message_count, :gap_threshold)
-                    RETURNING id
                 """), {
                     'chat_id': chat_id_, 'initiator_id': initiator_id_,
                     'start_time': start_, 'end_time': end_,
                     'message_count': msg_cnt_, 'gap_threshold': gap_
-                }).scalar_one()
-                new_convo_ids.append(new_id)
+                })
+                
+                if result.rowcount > 0:
+                    # New row inserted - get its ID
+                    new_id = session.execute(text("""
+                        SELECT id FROM conversations 
+                        WHERE chat_id = :chat_id AND start_time = :start_time AND end_time = :end_time
+                    """), {'chat_id': chat_id_, 'start_time': start_, 'end_time': end_}).scalar_one()
+                    new_convo_ids.append(new_id)
+                else:
+                    # Duplicate - get existing ID, don't count as imported
+                    new_id = session.execute(text("""
+                        SELECT id FROM conversations 
+                        WHERE chat_id = :chat_id AND start_time = :start_time AND end_time = :end_time
+                    """), {'chat_id': chat_id_, 'start_time': start_, 'end_time': end_}).scalar_one()
+                    imported_count -= 1  # Undo the increment from earlier
                 if first_run:
                     # Do one range update per conversation interval (fast path)
                     range_updates.append((new_id, chat_id_, start_, end_))
