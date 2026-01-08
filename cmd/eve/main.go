@@ -131,50 +131,73 @@ func main() {
 				sinceRowID = wm.ValueInt.Int64
 			}
 
-			// Count messages
-			messageCount, err := chatDB.CountMessages(sinceRowID)
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to count messages: %w", err))
+			// If dry-run, only count messages
+			if syncDryRun {
+				// Count messages
+				messageCount, err := chatDB.CountMessages(sinceRowID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count messages: %w", err))
+				}
+
+				// Get chat and handle counts
+				chatCount, err := chatDB.GetChatCount()
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count chats: %w", err))
+				}
+
+				handleCount, err := chatDB.GetHandleCount()
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count handles: %w", err))
+				}
+
+				// Output JSON (no message text, only counts)
+				output := map[string]interface{}{
+					"ok":             true,
+					"dry_run":        true,
+					"chat_db_path":   chatDBPath,
+					"messages_found": messageCount.TotalMessages,
+					"chats_found":    chatCount,
+					"handles_found":  handleCount,
+					"since_rowid":    sinceRowID,
+					"max_rowid":      messageCount.MaxRowID,
+				}
+
+				if !messageCount.OldestDate.IsZero() {
+					output["oldest_message_date"] = messageCount.OldestDate.Format(time.RFC3339)
+				}
+				if !messageCount.NewestDate.IsZero() {
+					output["newest_message_date"] = messageCount.NewestDate.Format(time.RFC3339)
+				}
+
+				return printJSON(output)
 			}
 
-			// Get chat and handle counts
-			chatCount, err := chatDB.GetChatCount()
+			// Run full ETL pipeline
+			syncResult, err := etl.FullSync(chatDB, warehouseDB, sinceRowID)
 			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to count chats: %w", err))
+				return printErrorJSON(fmt.Errorf("sync failed: %w", err))
 			}
 
-			handleCount, err := chatDB.GetHandleCount()
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to count handles: %w", err))
+			// Update watermark if we synced messages
+			if syncResult.MaxMessageRowID > 0 {
+				if err := etl.SetWatermark(warehouseDB, "chatdb", "message_rowid", &syncResult.MaxMessageRowID, nil); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to update watermark: %w", err))
+				}
 			}
 
 			// Output JSON (no message text, only counts)
 			output := map[string]interface{}{
-				"ok":             true,
-				"dry_run":        syncDryRun,
-				"chat_db_path":   chatDBPath,
-				"messages_found": messageCount.TotalMessages,
-				"chats_found":    chatCount,
-				"handles_found":  handleCount,
-				"since_rowid":    sinceRowID,
-				"max_rowid":      messageCount.MaxRowID,
-			}
-
-			if !messageCount.OldestDate.IsZero() {
-				output["oldest_message_date"] = messageCount.OldestDate.Format(time.RFC3339)
-			}
-			if !messageCount.NewestDate.IsZero() {
-				output["newest_message_date"] = messageCount.NewestDate.Format(time.RFC3339)
-			}
-
-			// Update watermark if not dry-run and we found messages
-			if !syncDryRun && messageCount.MaxRowID > 0 {
-				if err := etl.SetWatermark(warehouseDB, "chatdb", "message_rowid", &messageCount.MaxRowID, nil); err != nil {
-					return printErrorJSON(fmt.Errorf("failed to update watermark: %w", err))
-				}
-				output["watermark_updated"] = true
-			} else {
-				output["watermark_updated"] = false
+				"ok":                  true,
+				"dry_run":             false,
+				"chat_db_path":        chatDBPath,
+				"handles_synced":      syncResult.HandlesCount,
+				"chats_synced":        syncResult.ChatsCount,
+				"messages_synced":     syncResult.MessagesCount,
+				"attachments_synced":  syncResult.AttachmentsCount,
+				"conversations_built": syncResult.ConversationsCount,
+				"since_rowid":         sinceRowID,
+				"max_rowid":           syncResult.MaxMessageRowID,
+				"watermark_updated":   syncResult.MaxMessageRowID > 0,
 			}
 
 			return printJSON(output)
