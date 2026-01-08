@@ -165,7 +165,7 @@
         "All tests use fake Gemini server (no real calls)"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "files": [
         "internal/engine/*",
         "internal/embeddings/*",
@@ -183,7 +183,7 @@
         "No Python required for this path"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "files": [
         "internal/etl/*",
         "internal/db/*"

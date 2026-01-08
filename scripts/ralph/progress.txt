@@ -265,3 +265,70 @@ Started: 2026-01-08
 - Encoding tests verify deterministic output (sorted reactions), message ordering by timestamp, optional date headers
 - Reader tests confirm attachments and reactions are fetched with proper SQL NULL handling
 
+
+### EVGO-009 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented complete embeddings pipeline with batching for high-throughput embedding generation
+- Added batch embeddings API support in Gemini client (BatchEmbedContents)
+- Created embeddings batcher with configurable size/time-based flush (default: 100 items or 1 second)
+- Implemented embedding job handler that reads entities (conversation/message/chat), encodes, and persists
+- Added embeddings table migration (003_embeddings.sql) with entity_type/entity_id/model unique constraint
+- Binary blob storage for embedding vectors (float64 -> little-endian bytes)
+- Fixed reactions table schema to include is_from_me column (required by reader)
+
+**Files changed:**
+- `internal/embeddings/batcher.go` — Batching engine with concurrent processing, timer-based and size-based flushing
+- `internal/embeddings/batcher_test.go` — Comprehensive tests for size-based flush, time-based flush, empty batch handling
+- `internal/engine/embeddings_job.go` — Job handler for conversation/message/chat embeddings with Gemini API calls
+- `internal/engine/embeddings_job_test.go` — End-to-end tests with fake Gemini server, idempotency validation, blob encoding/decoding
+- `internal/gemini/client.go` — Added BatchEmbedContents method with retry logic and exponential backoff
+- `internal/gemini/client_test.go` — Tests for batch API success and retry behavior, testRoundTripper helper
+- `internal/migrate/sql/warehouse/003_embeddings.sql` — Embeddings table with BLOB storage, entity type/ID indexing
+- `internal/migrate/sql/warehouse/002_core_schema.sql` — Added is_from_me column to reactions table
+
+**Learnings:**
+- Batch embeddings API pattern: batchEmbedContents endpoint takes array of EmbedContentRequest
+- Batcher design: independent goroutines for timer loop and batch processing, context-based cancellation
+- Results channel pattern allows streaming results back to consumers as batches complete
+- Float64 blob encoding: binary.LittleEndian for cross-platform consistency, 8 bytes per float64
+- Idempotent persistence via ON CONFLICT DO UPDATE ensures safe retries without duplicates
+- Entity-based embedding design supports multiple entity types (conversation, message, chat) with single handler
+- Batcher flush strategies: maxBatchSize=100 for throughput, flushInterval=1s for latency
+- Tests use httptest.NewServer with custom RoundTripper to redirect Gemini API calls to fake server
+- Migration order matters: embeddings migration (003) depends on core schema (002)
+- All tests deterministic and fast (no real Gemini API calls, no network dependencies)
+- Schema evolution: reactions table needed is_from_me column added retrospectively for reader compatibility
+
+### EVGO-010 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Created internal/etl package for ETL operations (chat.db reading and watermark management)
+- Implemented chat.db reader with read-only optimized pragmas (query_only, synchronous=OFF, mmap, large cache)
+- Implemented watermark tracking system for incremental sync (get/set operations with int and text values)
+- Added `eve sync --dry-run` command that outputs JSON counts (no message text printed)
+- Supports incremental sync via watermark-based ROWID filtering
+
+**Files changed:**
+- `internal/etl/chatdb.go` — Chat.db reader with performance pragmas and Apple timestamp conversion
+- `internal/etl/chatdb_test.go` — 8 comprehensive tests for chat.db reading (empty, with data, since_rowid, counts)
+- `internal/etl/watermark.go` — Watermark get/set with upsert pattern (ON CONFLICT DO UPDATE)
+- `internal/etl/watermark_test.go` — 7 tests covering watermark CRUD, multiple entries, SQL injection safety
+- `cmd/eve/main.go` — Added sync command with --dry-run flag
+
+**Learnings:**
+- Chat.db path resolution: env override (EVE_SOURCE_CHAT_DB or CHATSTATS_SOURCE_CHAT_DB) takes precedence over default ~/Library/Messages/chat.db
+- Apple timestamps are nanoseconds since 2001-01-01 00:00:00 UTC (not Unix epoch)
+- Read-only pragmas significantly improve performance: query_only=ON, synchronous=OFF, journal_mode=OFF, temp_store=MEMORY
+- Large cache and mmap settings: cache_size=-262144 (256MB), mmap_size=268435456 (256MB)
+- Watermark table design: (source, name) as composite primary key, supports both int and text values via nullable columns
+- ON CONFLICT DO UPDATE provides idempotent upsert pattern for watermarks
+- Incremental sync uses ROWID watermark: WHERE ROWID > ? in message count query
+- JSON output includes only counts and timestamps, never message text (privacy by default)
+- sql.NullInt64 and sql.NullString handle optional database values correctly
+- Tests create temp databases with t.TempDir() for clean isolation
+- GetWatermark returns nil (not error) when watermark doesn't exist yet (first sync)
+- All 15 ETL tests pass deterministically with no external dependencies
+- Command supports both dry-run (no watermark update) and live mode (updates watermark)
+- Verification harness confirms all tests pass: go test ./internal/etl/... succeeds
+
