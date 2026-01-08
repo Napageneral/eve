@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -215,34 +216,63 @@ func (q *Queue) RequeueExpired() (int, error) {
 	return int(rowsAffected), nil
 }
 
+// isRetryableError checks if an error is retryable (database locked)
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "database is locked")
+}
+
+// retryWithBackoff retries a function with exponential backoff
+func retryWithBackoff(fn func() error, maxRetries int) error {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isRetryableError(err) {
+			return err
+		}
+		// Exponential backoff: 10ms, 20ms, 40ms, 80ms, 160ms
+		backoff := time.Duration(10*(1<<uint(attempt))) * time.Millisecond
+		time.Sleep(backoff)
+	}
+	return lastErr
+}
+
 // Ack marks a job as successfully completed
 func (q *Queue) Ack(jobID string) error {
-	now := time.Now().Unix()
+	return retryWithBackoff(func() error {
+		now := time.Now().Unix()
 
-	result, err := q.db.Exec(`
-		UPDATE jobs
-		SET state = 'succeeded',
-		    lease_owner = NULL,
-		    lease_expires_ts = NULL,
-		    updated_ts = ?
-		WHERE id = ?
-		  AND state = 'leased'
-	`, now, jobID)
+		result, err := q.db.Exec(`
+			UPDATE jobs
+			SET state = 'succeeded',
+			    lease_owner = NULL,
+			    lease_expires_ts = NULL,
+			    updated_ts = ?
+			WHERE id = ?
+			  AND state = 'leased'
+		`, now, jobID)
 
-	if err != nil {
-		return fmt.Errorf("failed to ack job: %w", err)
-	}
+		if err != nil {
+			return fmt.Errorf("failed to ack job: %w", err)
+		}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to get rows affected: %w", err)
+		}
 
-	if rowsAffected == 0 {
-		return fmt.Errorf("job %s not found or not in leased state", jobID)
-	}
+		if rowsAffected == 0 {
+			return fmt.Errorf("job %s not found or not in leased state", jobID)
+		}
 
-	return nil
+		return nil
+	}, 5)
 }
 
 // FailOptions configures job failure handling
@@ -254,71 +284,73 @@ type FailOptions struct {
 
 // Fail marks a job as failed and either retries or moves to dead state
 func (q *Queue) Fail(opts FailOptions) error {
-	now := time.Now().Unix()
+	return retryWithBackoff(func() error {
+		now := time.Now().Unix()
 
-	// Begin transaction to read and update atomically
-	tx, err := q.db.Begin()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Read current job state
-	var attempts, maxAttempts int
-	err = tx.QueryRow(`
-		SELECT attempts, max_attempts
-		FROM jobs
-		WHERE id = ? AND state = 'leased'
-	`, opts.JobID).Scan(&attempts, &maxAttempts)
-
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("job %s not found or not in leased state", opts.JobID)
-	}
-	if err != nil {
-		return fmt.Errorf("failed to read job: %w", err)
-	}
-
-	attempts++
-
-	// Determine next state and run_after
-	var nextState string
-	var runAfterTS int64
-
-	if attempts >= maxAttempts {
-		nextState = "dead"
-		runAfterTS = now
-	} else {
-		nextState = "pending"
-		// Exponential backoff: 2^attempts seconds
-		backoffSeconds := int64(1 << uint(attempts))
-		if opts.RetryDelay > 0 {
-			backoffSeconds = int64(opts.RetryDelay.Seconds())
+		// Begin transaction to read and update atomically
+		tx, err := q.db.Begin()
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
 		}
-		runAfterTS = now + backoffSeconds
-	}
+		defer tx.Rollback()
 
-	// Update job
-	_, err = tx.Exec(`
-		UPDATE jobs
-		SET state = ?,
-		    attempts = ?,
-		    run_after_ts = ?,
-		    lease_owner = NULL,
-		    lease_expires_ts = NULL,
-		    last_error = ?,
-		    updated_ts = ?
-		WHERE id = ?
-	`, nextState, attempts, runAfterTS, opts.ErrorMsg, now, opts.JobID)
+		// Read current job state
+		var attempts, maxAttempts int
+		err = tx.QueryRow(`
+			SELECT attempts, max_attempts
+			FROM jobs
+			WHERE id = ? AND state = 'leased'
+		`, opts.JobID).Scan(&attempts, &maxAttempts)
 
-	if err != nil {
-		return fmt.Errorf("failed to update failed job: %w", err)
-	}
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("job %s not found or not in leased state", opts.JobID)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read job: %w", err)
+		}
 
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit fail transaction: %w", err)
-	}
+		attempts++
 
-	return nil
+		// Determine next state and run_after
+		var nextState string
+		var runAfterTS int64
+
+		if attempts >= maxAttempts {
+			nextState = "dead"
+			runAfterTS = now
+		} else {
+			nextState = "pending"
+			// Exponential backoff: 2^attempts seconds
+			backoffSeconds := int64(1 << uint(attempts))
+			if opts.RetryDelay > 0 {
+				backoffSeconds = int64(opts.RetryDelay.Seconds())
+			}
+			runAfterTS = now + backoffSeconds
+		}
+
+		// Update job
+		_, err = tx.Exec(`
+			UPDATE jobs
+			SET state = ?,
+			    attempts = ?,
+			    run_after_ts = ?,
+			    lease_owner = NULL,
+			    lease_expires_ts = NULL,
+			    last_error = ?,
+			    updated_ts = ?
+			WHERE id = ?
+		`, nextState, attempts, runAfterTS, opts.ErrorMsg, now, opts.JobID)
+
+		if err != nil {
+			return fmt.Errorf("failed to update failed job: %w", err)
+		}
+
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit fail transaction: %w", err)
+		}
+
+		return nil
+	}, 5)
 }
 
 // Stats represents queue statistics

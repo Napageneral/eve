@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 	"github.com/tylerchilds/eve/internal/config"
+	"github.com/tylerchilds/eve/internal/engine"
 	"github.com/tylerchilds/eve/internal/migrate"
 	"github.com/tylerchilds/eve/internal/queue"
 )
@@ -110,7 +115,87 @@ func main() {
 		},
 	}
 
+	var runWorkerCount int
+	var runTimeout int
+
+	computeRunCmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run compute engine to process queued jobs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			// Open queue database with WAL mode and busy timeout
+			queueDB, err := sql.Open("sqlite3", cfg.QueueDBPath+"?_journal_mode=WAL&_busy_timeout=5000")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open queue database: %w", err))
+			}
+			defer queueDB.Close()
+
+			// Set connection pool limits for better concurrency
+			queueDB.SetMaxOpenConns(25)
+			queueDB.SetMaxIdleConns(10)
+
+			// Create queue
+			q := queue.New(queueDB)
+
+			// Create engine with config
+			engineCfg := engine.DefaultConfig()
+			if runWorkerCount > 0 {
+				engineCfg.WorkerCount = runWorkerCount
+			}
+
+			eng := engine.New(q, engineCfg)
+
+			// Register fake job handler for testing
+			eng.RegisterHandler("fake", engine.FakeJobHandler)
+
+			// Setup context with cancellation
+			var ctx context.Context
+			var cancel context.CancelFunc
+
+			if runTimeout > 0 {
+				ctx, cancel = context.WithTimeout(context.Background(), time.Duration(runTimeout)*time.Second)
+				defer cancel()
+			} else {
+				// Setup signal handling for graceful shutdown
+				ctx, cancel = context.WithCancel(context.Background())
+				defer cancel()
+
+				sigChan := make(chan os.Signal, 1)
+				signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+				go func() {
+					<-sigChan
+					cancel()
+				}()
+			}
+
+			// Run engine
+			startTime := time.Now()
+			stats, err := eng.Run(ctx)
+			duration := time.Since(startTime)
+
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("compute run failed: %w", err))
+			}
+
+			// Output stats
+			output := map[string]interface{}{
+				"ok":        true,
+				"succeeded": stats.Succeeded,
+				"failed":    stats.Failed,
+				"skipped":   stats.Skipped,
+				"duration":  duration.Seconds(),
+			}
+			return printJSON(output)
+		},
+	}
+
+	computeRunCmd.Flags().IntVar(&runWorkerCount, "workers", 0, "Number of concurrent workers (default: 10)")
+	computeRunCmd.Flags().IntVar(&runTimeout, "timeout", 0, "Timeout in seconds (0 = no timeout)")
+
 	computeCmd.AddCommand(computeStatusCmd)
+	computeCmd.AddCommand(computeRunCmd)
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
