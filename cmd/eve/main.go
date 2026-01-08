@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tylerchilds/eve/internal/config"
 	"github.com/tylerchilds/eve/internal/engine"
+	"github.com/tylerchilds/eve/internal/etl"
 	"github.com/tylerchilds/eve/internal/migrate"
 	"github.com/tylerchilds/eve/internal/queue"
 )
@@ -84,6 +85,102 @@ func main() {
 			return printJSON(output)
 		},
 	}
+
+	// Sync command
+	var syncDryRun bool
+
+	syncCmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Sync data from macOS Messages database",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			// Get chat.db path
+			chatDBPath := etl.GetChatDBPath()
+			if chatDBPath == "" {
+				return printErrorJSON(fmt.Errorf("failed to determine chat.db path"))
+			}
+
+			// Check if chat.db exists
+			if _, err := os.Stat(chatDBPath); os.IsNotExist(err) {
+				return printErrorJSON(fmt.Errorf("chat.db not found at %s", chatDBPath))
+			}
+
+			// Open chat.db
+			chatDB, err := etl.OpenChatDB(chatDBPath)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open chat.db: %w", err))
+			}
+			defer chatDB.Close()
+
+			// Open warehouse database
+			warehouseDB, err := sql.Open("sqlite3", cfg.EveDBPath)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open warehouse database: %w", err))
+			}
+			defer warehouseDB.Close()
+
+			// Get watermark for incremental sync
+			var sinceRowID int64 = 0
+			wm, err := etl.GetWatermark(warehouseDB, "chatdb", "message_rowid")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to get watermark: %w", err))
+			}
+			if wm != nil && wm.ValueInt.Valid {
+				sinceRowID = wm.ValueInt.Int64
+			}
+
+			// Count messages
+			messageCount, err := chatDB.CountMessages(sinceRowID)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count messages: %w", err))
+			}
+
+			// Get chat and handle counts
+			chatCount, err := chatDB.GetChatCount()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count chats: %w", err))
+			}
+
+			handleCount, err := chatDB.GetHandleCount()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count handles: %w", err))
+			}
+
+			// Output JSON (no message text, only counts)
+			output := map[string]interface{}{
+				"ok":             true,
+				"dry_run":        syncDryRun,
+				"chat_db_path":   chatDBPath,
+				"messages_found": messageCount.TotalMessages,
+				"chats_found":    chatCount,
+				"handles_found":  handleCount,
+				"since_rowid":    sinceRowID,
+				"max_rowid":      messageCount.MaxRowID,
+			}
+
+			if !messageCount.OldestDate.IsZero() {
+				output["oldest_message_date"] = messageCount.OldestDate.Format(time.RFC3339)
+			}
+			if !messageCount.NewestDate.IsZero() {
+				output["newest_message_date"] = messageCount.NewestDate.Format(time.RFC3339)
+			}
+
+			// Update watermark if not dry-run and we found messages
+			if !syncDryRun && messageCount.MaxRowID > 0 {
+				if err := etl.SetWatermark(warehouseDB, "chatdb", "message_rowid", &messageCount.MaxRowID, nil); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to update watermark: %w", err))
+				}
+				output["watermark_updated"] = true
+			} else {
+				output["watermark_updated"] = false
+			}
+
+			return printJSON(output)
+		},
+	}
+
+	syncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false, "Count messages without updating watermark")
 
 	// Compute command group
 	computeCmd := &cobra.Command{
@@ -200,6 +297,7 @@ func main() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(computeCmd)
 
 	if err := rootCmd.Execute(); err != nil {
