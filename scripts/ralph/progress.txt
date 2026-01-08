@@ -49,13 +49,21 @@ All 10 stories passed:
 
 ## Story Progress (append after each story)
 
-### [STORY-ID] (YYYY-MM-DD)
-**Status:** ✅ PASSED | ❌ FAILED
+### EVGO-011 (2026-01-08)
+**Status:** ✅ PASSED
 **What changed:**
-- ...
+- Implemented SyncHandles() to copy handles from chat.db to eve.db
+- Reads all handles with ROWID and identifier from chat.db handle table
+- Inserts into contacts table using handle ROWID as contact_id (preserves FK references)
+- Inserts into contact_identifiers with type detection (email if contains @, else phone)
+- Idempotent via check-before-insert pattern (no UNIQUE constraint on contact_identifiers yet)
 **Files changed:**
-- ...
+- internal/etl/handles.go (new)
+- internal/etl/handles_test.go (new)
 **Learnings:**
-- ...
+- Handle ROWID → contact_id mapping is critical for FK consistency with messages later
+- contact_identifiers schema lacks UNIQUE constraint, so used check-then-insert for idempotency
+- Simple @ detection works for email vs phone classification
+- Test helper naming collision: renamed to createTestWarehouseDBWithContacts() to avoid conflict with watermark_test.go
 
 ---

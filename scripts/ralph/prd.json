@@ -23,7 +23,7 @@
         "Unit tests with synthetic chat.db fixture"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "files": ["internal/etl/handles.go", "internal/etl/handles_test.go"],
       "notes": "Handle ROWID becomes contact_id for foreign key references."
     },
