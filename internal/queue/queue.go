@@ -320,3 +320,74 @@ func (q *Queue) Fail(opts FailOptions) error {
 
 	return nil
 }
+
+// Stats represents queue statistics
+type Stats struct {
+	Pending   int   `json:"pending"`
+	Leased    int   `json:"leased"`
+	Succeeded int   `json:"succeeded"`
+	Failed    int   `json:"failed"`
+	Dead      int   `json:"dead"`
+	Total     int   `json:"total"`
+	OldestTS  int64 `json:"oldest_pending_ts,omitempty"`
+}
+
+// GetStats returns queue backlog statistics
+func (q *Queue) GetStats() (*Stats, error) {
+	stats := &Stats{}
+
+	// Count jobs by state
+	rows, err := q.db.Query(`
+		SELECT state, COUNT(*) as count
+		FROM jobs
+		GROUP BY state
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query job counts: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var state string
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan count: %w", err)
+		}
+
+		switch state {
+		case "pending":
+			stats.Pending = count
+		case "leased":
+			stats.Leased = count
+		case "succeeded":
+			stats.Succeeded = count
+		case "failed":
+			stats.Failed = count
+		case "dead":
+			stats.Dead = count
+		}
+		stats.Total += count
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating counts: %w", err)
+	}
+
+	// Get oldest pending job timestamp
+	var oldestTS sql.NullInt64
+	err = q.db.QueryRow(`
+		SELECT MIN(created_ts)
+		FROM jobs
+		WHERE state = 'pending'
+	`).Scan(&oldestTS)
+
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("failed to query oldest pending: %w", err)
+	}
+
+	if oldestTS.Valid {
+		stats.OldestTS = oldestTS.Int64
+	}
+
+	return stats, nil
+}

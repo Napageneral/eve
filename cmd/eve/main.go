@@ -1,13 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 	"github.com/tylerchilds/eve/internal/config"
 	"github.com/tylerchilds/eve/internal/migrate"
+	"github.com/tylerchilds/eve/internal/queue"
 )
 
 var version = "0.1.0-dev"
@@ -77,9 +80,42 @@ func main() {
 		},
 	}
 
+	// Compute command group
+	computeCmd := &cobra.Command{
+		Use:   "compute",
+		Short: "Compute engine operations",
+	}
+
+	computeStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show queue backlog statistics",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			// Open queue database
+			db, err := sql.Open("sqlite3", cfg.QueueDBPath)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open queue database: %w", err))
+			}
+			defer db.Close()
+
+			// Get queue stats
+			q := queue.New(db)
+			stats, err := q.GetStats()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to get queue stats: %w", err))
+			}
+
+			return printJSON(stats)
+		},
+	}
+
+	computeCmd.AddCommand(computeStatusCmd)
+
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(computeCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

@@ -2,6 +2,7 @@ package queue
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -657,5 +658,107 @@ func TestFail_ExponentialBackoff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to reset run_after_ts: %v", err)
 		}
+	}
+}
+
+func TestGetStats_Empty(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	q := New(db)
+
+	stats, err := q.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	if stats.Total != 0 {
+		t.Errorf("expected total 0, got %d", stats.Total)
+	}
+	if stats.Pending != 0 {
+		t.Errorf("expected pending 0, got %d", stats.Pending)
+	}
+	if stats.OldestTS != 0 {
+		t.Errorf("expected oldest_ts 0, got %d", stats.OldestTS)
+	}
+}
+
+func TestGetStats_WithJobs(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	q := New(db)
+
+	// Enqueue 3 pending jobs
+	for i := 1; i <= 3; i++ {
+		err := q.Enqueue(EnqueueOptions{
+			Type:    "test_job",
+			Key:     fmt.Sprintf("pending-%d", i),
+			Payload: map[string]string{"idx": fmt.Sprintf("%d", i)},
+		})
+		if err != nil {
+			t.Fatalf("Enqueue pending job %d failed: %v", i, err)
+		}
+		time.Sleep(10 * time.Millisecond) // ensure different timestamps
+	}
+
+	// Lease 2 jobs
+	jobs, err := q.Lease(LeaseOptions{
+		LeaseOwner: "worker-1",
+		LeaseTTL:   30 * time.Second,
+		BatchSize:  2,
+	})
+	if err != nil {
+		t.Fatalf("Lease failed: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 leased jobs, got %d", len(jobs))
+	}
+
+	// Ack one leased job (succeeded)
+	err = q.Ack(jobs[0].ID)
+	if err != nil {
+		t.Fatalf("Ack failed: %v", err)
+	}
+
+	// Fail the other leased job with max_attempts=1 (dead)
+	_, err = db.Exec("UPDATE jobs SET max_attempts = 1 WHERE id = ?", jobs[1].ID)
+	if err != nil {
+		t.Fatalf("failed to update max_attempts: %v", err)
+	}
+	err = q.Fail(FailOptions{
+		JobID:    jobs[1].ID,
+		ErrorMsg: "fatal error",
+	})
+	if err != nil {
+		t.Fatalf("Fail failed: %v", err)
+	}
+
+	// Now stats should show: 1 pending, 1 succeeded, 1 dead
+	stats, err := q.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	if stats.Total != 3 {
+		t.Errorf("expected total 3, got %d", stats.Total)
+	}
+	if stats.Pending != 1 {
+		t.Errorf("expected pending 1, got %d", stats.Pending)
+	}
+	if stats.Leased != 0 {
+		t.Errorf("expected leased 0, got %d", stats.Leased)
+	}
+	if stats.Succeeded != 1 {
+		t.Errorf("expected succeeded 1, got %d", stats.Succeeded)
+	}
+	if stats.Failed != 0 {
+		t.Errorf("expected failed 0, got %d", stats.Failed)
+	}
+	if stats.Dead != 1 {
+		t.Errorf("expected dead 1, got %d", stats.Dead)
+	}
+	if stats.OldestTS == 0 {
+		t.Errorf("expected oldest_ts to be set, got 0")
 	}
 }
