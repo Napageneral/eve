@@ -72,7 +72,7 @@
         "Unit tests"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "files": ["internal/etl/attachments.go", "internal/etl/attachments_test.go"],
       "notes": "Attachment file paths are NOT copied, only metadata."
     },

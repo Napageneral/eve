@@ -111,3 +111,28 @@ All 10 stories passed:
 
 ---
 
+### EVGO-014 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented SyncAttachments() to copy attachments from chat.db to eve.db
+- Reads attachments via message_attachment_join, joined with message table to get message guid
+- Maps message guid → message id for foreign key reference using buildMessageMap()
+- Converts Apple timestamps to Go time.Time for created_date field
+- Stores filename, mime_type, size, uti, is_sticker fields
+- Idempotent via guid UNIQUE constraint with ON CONFLICT DO UPDATE
+- Handles nullable fields properly (filename, uti, mime_type, total_bytes)
+**Files changed:**
+- internal/etl/attachments.go (new)
+- internal/etl/attachments_test.go (new)
+**Learnings:**
+- Attachments require 3-way join: attachment → message_attachment_join → message to get message guid
+- Message guid → message id mapping is necessary because chat.db uses message ROWID but eve.db uses auto-generated id
+- buildMessageMap() helper function makes the mapping efficient (single query, then lookup in memory)
+- Sticker flag (is_sticker) is preserved from chat.db
+- File paths are NOT copied, only metadata (per requirements)
+- Attachment GUID provides clean idempotency via UNIQUE constraint
+- Multiple attachments per message work naturally via message_id FK
+- Test pattern: create both chat.db and eve.db fixtures, populate messages first, then sync attachments
+
+---
+
