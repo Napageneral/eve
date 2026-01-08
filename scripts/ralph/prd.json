@@ -56,7 +56,7 @@
         "Unit tests with synthetic data"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "files": ["internal/etl/messages.go", "internal/etl/messages_test.go"],
       "notes": "This is the main data volume. Must be efficient for 300k+ messages."
     },

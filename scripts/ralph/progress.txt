@@ -88,3 +88,26 @@ All 10 stories passed:
 
 ---
 
+### EVGO-013 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented SyncMessages() to copy messages from chat.db to eve.db
+- Reads messages joined with chat_message_join to get chat_id mapping
+- Converts Apple timestamps (nanoseconds since 2001-01-01) to Go time.Time
+- Maps handle_id → sender_id (contact FK), preserving NULL for is_from_me messages
+- Supports incremental sync via sinceRowID watermark parameter
+- Idempotent via guid UNIQUE constraint with ON CONFLICT DO UPDATE
+**Files changed:**
+- internal/etl/messages.go (new)
+- internal/etl/messages_test.go (new)
+**Learnings:**
+- Apple timestamp conversion: add duration to time.Date(2001,1,1,0,0,0,0,UTC)
+- chat_message_join is critical: message table doesn't have direct chat_id field
+- handle_id from chat.db maps to sender_id in eve.db (foreign key to contacts)
+- is_from_me messages have handle_id=0 or NULL, so sender_id should be NULL
+- guid UNIQUE constraint enables clean idempotency with ON CONFLICT DO UPDATE
+- Incremental sync query: WHERE m.ROWID > ? filters efficiently for watermark
+- Test fixtures need all three tables: message, chat_message_join, and junction data
+
+---
+
