@@ -75,29 +75,37 @@ func (c *ChatDB) GetHandles() ([]Handle, error) {
 // insertHandle inserts a handle into contacts and contact_identifiers
 // Uses the handle ROWID as the contact_id for foreign key consistency
 func insertHandle(tx *sql.Tx, handle *Handle) error {
+	normalized, identifierType := normalizeIdentifier(handle.ID)
+	if normalized == "" {
+		// Skip empty identifiers
+		return nil
+	}
+
 	// Insert into contacts table
 	// Use handle ROWID as contact id to maintain foreign key references
 	// Idempotent: ON CONFLICT DO NOTHING since we're using explicit id
 	contactQuery := `
-		INSERT INTO contacts (id, data_source, last_updated)
-		VALUES (?, 'chat.db', CURRENT_TIMESTAMP)
+		INSERT INTO contacts (id, name, data_source, last_updated)
+		VALUES (?, ?, 'chat.db', CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
+			-- Keep an existing \"real\" name if present; otherwise default to the identifier
+			name = CASE
+			         WHEN contacts.name IS NULL OR contacts.name = '' THEN excluded.name
+			         ELSE contacts.name
+			       END,
 			last_updated = CURRENT_TIMESTAMP
 	`
 
-	if _, err := tx.Exec(contactQuery, handle.ROWID); err != nil {
+	if _, err := tx.Exec(contactQuery, handle.ROWID, normalized); err != nil {
 		return fmt.Errorf("failed to insert contact: %w", err)
 	}
-
-	// Determine identifier type (email vs phone)
-	identifierType := determineIdentifierType(handle.ID)
 
 	// Insert into contact_identifiers table
 	// Idempotent: INSERT OR IGNORE (requires unique constraint to be added to schema later)
 	// For now, check if exists first
 	var existingID int64
 	checkQuery := `SELECT id FROM contact_identifiers WHERE contact_id = ? AND identifier = ?`
-	err := tx.QueryRow(checkQuery, handle.ROWID, handle.ID).Scan(&existingID)
+	err := tx.QueryRow(checkQuery, handle.ROWID, normalized).Scan(&existingID)
 
 	if err == sql.ErrNoRows {
 		// Doesn't exist, insert it
@@ -105,7 +113,7 @@ func insertHandle(tx *sql.Tx, handle *Handle) error {
 			INSERT INTO contact_identifiers (contact_id, identifier, type, is_primary, last_used)
 			VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
 		`
-		if _, err := tx.Exec(identifierQuery, handle.ROWID, handle.ID, identifierType); err != nil {
+		if _, err := tx.Exec(identifierQuery, handle.ROWID, normalized, identifierType); err != nil {
 			return fmt.Errorf("failed to insert contact_identifier: %w", err)
 		}
 	} else if err != nil {
@@ -121,9 +129,9 @@ func insertHandle(tx *sql.Tx, handle *Handle) error {
 	return nil
 }
 
-// determineIdentifierType returns 'email' or 'phone' based on the identifier format
+// determineIdentifierType is kept for tests/compat, but normalizeIdentifier should be preferred.
+// NOTE: This does NOT normalize; it only classifies.
 func determineIdentifierType(identifier string) string {
-	// Simple heuristic: if contains @, it's email, otherwise phone
 	if strings.Contains(identifier, "@") {
 		return "email"
 	}

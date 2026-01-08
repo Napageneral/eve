@@ -34,6 +34,10 @@ func FullSync(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64) (*SyncResul
 	}
 	result.HandlesCount = handlesCount
 
+	// Step 1b: Hydrate contact names from AddressBook (best-effort; no hard failure)
+	// This resolves contacts.name for handle-based contacts so queries/encoding can show real names.
+	_, _ = HydrateContactNamesFromAddressBook(warehouseDB)
+
 	// Step 2: Sync chats (must run before messages for FK references)
 	chatsCount, err := SyncChats(chatDB, warehouseDB)
 	if err != nil {

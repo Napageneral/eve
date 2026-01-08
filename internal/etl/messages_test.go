@@ -39,6 +39,7 @@ func createTestChatDBWithMessages(t *testing.T) string {
 			ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
 			guid TEXT UNIQUE NOT NULL,
 			text TEXT,
+			attributedBody BLOB,
 			handle_id INTEGER,
 			date INTEGER,
 			is_from_me INTEGER DEFAULT 0,
@@ -108,6 +109,7 @@ func createTestChatDBWithMessages(t *testing.T) string {
 	messages := []struct {
 		guid                  string
 		text                  string
+		attributedBody        []byte
 		handleID              *int64
 		date                  int64
 		isFromMe              int
@@ -120,6 +122,7 @@ func createTestChatDBWithMessages(t *testing.T) string {
 		{
 			guid:     "msg-001",
 			text:     "Hello, how are you?",
+			// attributedBody is present in real chat.db but omitted here for simplicity
 			handleID: ptr(int64(1)),
 			date:     toAppleNano(baseTime),
 			isFromMe: 0,
@@ -130,6 +133,7 @@ func createTestChatDBWithMessages(t *testing.T) string {
 		{
 			guid:     "msg-002",
 			text:     "I'm doing great, thanks!",
+			// is_from_me, so no handle_id
 			handleID: nil, // is_from_me, so no handle_id
 			date:     toAppleNano(baseTime.Add(1 * time.Minute)),
 			isFromMe: 1,
@@ -161,12 +165,25 @@ func createTestChatDBWithMessages(t *testing.T) string {
 		{
 			guid:     "msg-005",
 			text:     "", // Empty message (e.g., reaction or attachment only)
+			// No attributedBody => should remain empty after ETL
 			handleID: ptr(int64(1)),
 			date:     toAppleNano(baseTime.Add(3 * time.Hour)),
 			isFromMe: 0,
 			msgType:  2, // Non-standard type
 			service:  "SMS",
 			chatID:   1,
+		},
+		{
+			guid: "msg-006",
+			text: "", // text missing
+			// attributedBody contains a synthetic typedstream-ish payload that our decoder should extract
+			attributedBody: []byte("NSStringABCDEFHello from attributedBody123456789012NSDictionary...NSNumber"),
+			handleID:       ptr(int64(1)),
+			date:           toAppleNano(baseTime.Add(4 * time.Hour)),
+			isFromMe:       0,
+			msgType:        0,
+			service:        "iMessage",
+			chatID:         1,
 		},
 	}
 
@@ -187,9 +204,9 @@ func createTestChatDBWithMessages(t *testing.T) string {
 		}
 
 		result, err := db.Exec(
-			`INSERT INTO message (guid, text, handle_id, date, is_from_me, type, service, associated_message_guid, reply_to_guid)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.guid, m.text, handleID, m.date, m.isFromMe, m.msgType, m.service, associatedGUID, replyGUID,
+			`INSERT INTO message (guid, text, attributedBody, handle_id, date, is_from_me, type, service, associated_message_guid, reply_to_guid)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.guid, m.text, m.attributedBody, handleID, m.date, m.isFromMe, m.msgType, m.service, associatedGUID, replyGUID,
 		)
 		if err != nil {
 			t.Fatalf("Failed to insert message: %v", err)
@@ -298,8 +315,8 @@ func TestSyncMessages(t *testing.T) {
 		t.Fatalf("Failed to sync messages: %v", err)
 	}
 
-	if count != 5 {
-		t.Errorf("Expected 5 messages synced, got %d", count)
+	if count != 6 {
+		t.Errorf("Expected 6 messages synced, got %d", count)
 	}
 
 	// Verify messages table
@@ -309,8 +326,8 @@ func TestSyncMessages(t *testing.T) {
 		t.Fatalf("Failed to count messages: %v", err)
 	}
 
-	if msgCount != 5 {
-		t.Errorf("Expected 5 messages, got %d", msgCount)
+	if msgCount != 6 {
+		t.Errorf("Expected 6 messages, got %d", msgCount)
 	}
 }
 
@@ -347,8 +364,8 @@ func TestSyncMessages_Idempotent(t *testing.T) {
 		t.Fatalf("Failed to count messages: %v", err)
 	}
 
-	if msgCount != 5 {
-		t.Errorf("Expected 5 messages after idempotent sync, got %d", msgCount)
+	if msgCount != 6 {
+		t.Errorf("Expected 6 messages after idempotent sync, got %d", msgCount)
 	}
 
 	// Verify UNIQUE constraint on guid works
@@ -358,8 +375,8 @@ func TestSyncMessages_Idempotent(t *testing.T) {
 		t.Fatalf("Failed to count unique guids: %v", err)
 	}
 
-	if guidCount != 5 {
-		t.Errorf("Expected 5 unique guids, got %d", guidCount)
+	if guidCount != 6 {
+		t.Errorf("Expected 6 unique guids, got %d", guidCount)
 	}
 }
 
@@ -380,8 +397,8 @@ func TestSyncMessages_IncrementalSync(t *testing.T) {
 		t.Fatalf("Failed to sync messages with watermark: %v", err)
 	}
 
-	if count != 3 {
-		t.Errorf("Expected 3 messages synced (ROWID > 2), got %d", count)
+	if count != 4 {
+		t.Errorf("Expected 4 messages synced (ROWID > 2), got %d", count)
 	}
 
 	// Verify only 3 messages in warehouse
@@ -391,8 +408,8 @@ func TestSyncMessages_IncrementalSync(t *testing.T) {
 		t.Fatalf("Failed to count messages: %v", err)
 	}
 
-	if msgCount != 3 {
-		t.Errorf("Expected 3 messages, got %d", msgCount)
+	if msgCount != 4 {
+		t.Errorf("Expected 4 messages, got %d", msgCount)
 	}
 
 	// Second sync: all messages
@@ -401,8 +418,8 @@ func TestSyncMessages_IncrementalSync(t *testing.T) {
 		t.Fatalf("Failed to sync all messages: %v", err)
 	}
 
-	if count != 5 {
-		t.Errorf("Expected 5 messages synced, got %d", count)
+	if count != 6 {
+		t.Errorf("Expected 6 messages synced, got %d", count)
 	}
 
 	// Verify all 5 messages now in warehouse
@@ -411,8 +428,8 @@ func TestSyncMessages_IncrementalSync(t *testing.T) {
 		t.Fatalf("Failed to count messages: %v", err)
 	}
 
-	if msgCount != 5 {
-		t.Errorf("Expected 5 messages after full sync, got %d", msgCount)
+	if msgCount != 6 {
+		t.Errorf("Expected 6 messages after full sync, got %d", msgCount)
 	}
 }
 
@@ -530,6 +547,16 @@ func TestSyncMessages_NullableFields(t *testing.T) {
 		t.Errorf("Expected empty content, got %q", content)
 	}
 
+	// Verify attributedBody decoding
+	query = "SELECT content FROM messages WHERE guid = 'msg-006'"
+	err = warehouseDB.QueryRow(query).Scan(&content)
+	if err != nil {
+		t.Fatalf("Failed to query content for attributedBody message: %v", err)
+	}
+	if content != "Hello from attributedBody" {
+		t.Errorf("Expected decoded content, got %q", content)
+	}
+
 	// Verify reply_to_guid
 	var replyToGUID sql.NullString
 	query = "SELECT reply_to_guid FROM messages WHERE guid = 'msg-004'"
@@ -558,6 +585,7 @@ func TestSyncMessages_Empty(t *testing.T) {
 			ROWID INTEGER PRIMARY KEY,
 			guid TEXT UNIQUE NOT NULL,
 			text TEXT,
+			attributedBody BLOB,
 			handle_id INTEGER,
 			date INTEGER,
 			is_from_me INTEGER,
@@ -624,8 +652,8 @@ func TestGetMessages(t *testing.T) {
 		t.Fatalf("Failed to get messages: %v", err)
 	}
 
-	if len(messages) != 5 {
-		t.Errorf("Expected 5 messages, got %d", len(messages))
+	if len(messages) != 6 {
+		t.Errorf("Expected 6 messages, got %d", len(messages))
 	}
 
 	// Verify ROWID sequence

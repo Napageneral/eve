@@ -190,3 +190,33 @@ All 10 stories passed:
 
 ---
 
+### EVGO-017 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Deleted entire python/ directory (226 files, 37k+ lines removed)
+- Removed all .py files from the repository
+- Updated Makefile: removed py-check, py-install, py-test targets
+- Added go-build and go-test targets to Makefile
+- Updated Makefile help text to reflect Go-first architecture
+- Updated ralph-verify target in Makefile to only run Go tests
+- Updated scripts/ralph/verify.sh to remove Python import check
+- Completely rewrote README.md to describe Eve as single Go binary
+- New README focuses on: eve init, eve sync, eve compute commands
+- Removed all references to Python runtime, Celery, Redis from README
+**Files changed:**
+- python/ (deleted entirely - 226 files)
+- Makefile (updated)
+- README.md (completely rewritten)
+- scripts/ralph/verify.sh (updated)
+**Learnings:**
+- Python codebase was ~38k lines across 226 files
+- All functionality now in Go: ETL, queue, compute engine, Gemini client
+- Verification still passes with only Go tests
+- Ralph verification loop now pure Go (no Python import checks)
+- Eve is now truly a single Go binary with zero Python dependencies
+- README transformation: from multi-language project to simple Go CLI tool
+- Documentation now focuses on concrete commands users can run
+- Final cleanup milestone: Eve extracted from ChatStats is now Go-only
+
+---
+

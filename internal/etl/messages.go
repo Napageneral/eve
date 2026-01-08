@@ -11,6 +11,7 @@ type Message struct {
 	ROWID                 int64
 	GUID                  string
 	Text                  sql.NullString
+	AttributedBody        []byte
 	HandleID              sql.NullInt64
 	Date                  int64 // Apple timestamp (nanoseconds since 2001-01-01)
 	IsFromMe              bool
@@ -64,6 +65,7 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 			m.ROWID,
 			m.guid,
 			m.text,
+			m.attributedBody,
 			m.handle_id,
 			m.date,
 			m.is_from_me,
@@ -91,6 +93,7 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 			&msg.ROWID,
 			&msg.GUID,
 			&msg.Text,
+			&msg.AttributedBody,
 			&msg.HandleID,
 			&msg.Date,
 			&msg.IsFromMe,
@@ -126,6 +129,10 @@ func insertMessage(tx *sql.Tx, msg *Message) error {
 	if msg.Text.Valid {
 		content = msg.Text.String
 	}
+	if content == "" && len(msg.AttributedBody) > 0 {
+		content = decodeAttributedBody(msg.AttributedBody)
+	}
+	content = cleanMessageContent(content)
 
 	var senderID *int64
 	if msg.HandleID.Valid && msg.HandleID.Int64 > 0 {

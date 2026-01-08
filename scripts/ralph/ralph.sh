@@ -20,7 +20,6 @@ echo "🤖 Agent cmd: $AGENT_CMD"
 echo ""
 
 echo "📋 Pre-flight checks..."
-command -v python3 >/dev/null 2>&1 || (echo "❌ python3 not found" && exit 1)
 command -v npx >/dev/null 2>&1 || (echo "❌ npx not found" && exit 1)
 command -v claude >/dev/null 2>&1 || echo "⚠️ claude CLI not found (AGENT_CMD may point elsewhere)"
 

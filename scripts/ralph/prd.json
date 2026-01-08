@@ -120,7 +120,7 @@
         "All Go tests still pass"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "files": ["python/", "Makefile", "README.md"],
       "notes": "Final cleanup. Eve is now a single Go binary."
     }
