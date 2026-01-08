@@ -1,0 +1,119 @@
+# Ralph Progress Log for Eve
+Started: 2026-01-08
+
+## Codebase Patterns (keep updated)
+
+### Output + privacy defaults
+- **Stdout contract**: JSON-only by default for all CLI commands.
+- **No message text by default**: message bodies should not appear in stdout/logs unless explicitly requested (e.g., `--include-text`).
+- **JSONL when streaming**: prefer `--jsonl` (one JSON object per line) for progress streams.
+
+### Data + queries
+- **Raw SQL only**: do not introduce ORMs for queries. Use `database/sql` with explicit SQL.
+- **Idempotency**: every persisted artifact must have a unique idempotency key and use upserts.
+- **Separate DBs**: prefer `eve.db` (warehouse) and `eve-queue.db` (durable queue) to avoid lock contention.
+
+### Testing
+- **Ralph harness**: `make ralph-verify`
+- **NO real Gemini calls in unit tests**: use `httptest` fake servers.
+- **NO real-data ETL in the loop**: keep tests deterministic and cheap.
+
+### Go rewrite conventions
+- **Single binary**: no Python runtime required for the happy path.
+- **No gRPC client stacks**: Gemini calls via HTTP/2 REST only.
+- **Config precedence**: env vars override config file; config file overrides defaults.
+
+## Key Files / Directories
+
+- `docs/ralph/GO_SINGLE_BINARY_PLAN.md` — full design
+- `docs/ralph/EXECUTION_CHECKLIST.md` — ordered implementation steps
+- `scripts/ralph/prd.json` — task list for Ralph
+- `scripts/ralph/prompt.md` — loop instructions
+- `Makefile` — includes `ralph-verify`
+
+---
+
+## Story Progress (append after each story)
+
+(Append learnings after each story in this format)
+
+### [STORY-ID] (YYYY-MM-DD)
+**Status:** ✅ PASSED | ❌ FAILED
+**What changed:**
+- ...
+**Files changed:**
+- ...
+**Learnings:**
+- ...
+
+---
+
+### EVGO-001 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Created Go module with Cobra CLI framework
+- Implemented minimal eve binary with version and paths commands
+- Both commands output stable JSON as required
+- App directory resolution works across macOS/Linux/Windows
+
+**Files changed:**
+- `go.mod` + `go.sum` — Go module with cobra dependency
+- `cmd/eve/main.go` — CLI entry point with version and paths commands
+- `internal/config/config.go` — Config loading with app dir resolution and env var support
+
+**Learnings:**
+- Cobra provides clean CLI structure with automatic help generation
+- Config package already implements env var overrides (GEMINI_API_KEY, EVE_GEMINI_ANALYSIS_MODEL, EVE_GEMINI_EMBED_MODEL) which satisfies EVGO-002 acceptance criteria
+- JSON encoder with SetIndent provides clean, readable output
+- App directory resolution follows platform conventions (Library/Application Support on macOS)
+- Verification harness runs successfully with go.mod present
+
+---
+
+### EVGO-002 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Verified that EVGO-001 implementation already satisfies EVGO-002 requirements
+- Config loading with env var precedence is fully functional
+- All three required env vars are supported with appropriate defaults
+
+**Files changed:**
+- No new changes; `internal/config/config.go` from EVGO-001 already implements all requirements
+
+**Learnings:**
+- Config.Load() reads GEMINI_API_KEY with empty string default (line 51)
+- EVE_GEMINI_ANALYSIS_MODEL defaults to "gemini-3.0-flash" (line 52)
+- EVE_GEMINI_EMBED_MODEL defaults to "text-embedding-005" (line 53)
+- ConfigPath correctly resolves to app_dir/config.json (line 50)
+- getEnv helper provides clean env override pattern
+- EVGO-001 and EVGO-002 were implemented together efficiently
+
+
+### EVGO-003 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Created migration runner package using go:embed for SQL files
+- Implemented queue DB schema (jobs + runs tables with proper indexes)
+- Implemented warehouse DB watermark table for ETL tracking
+- Added `eve init` command that creates/migrates both databases
+- Migration tracking via schema_migrations table ensures idempotency
+
+**Files changed:**
+- `internal/migrate/migrate.go` — migration runner with embedded SQL support
+- `internal/migrate/migrate_test.go` — comprehensive unit tests for migrations
+- `internal/migrate/sql/queue/001_init.sql` — queue DB schema (jobs + runs)
+- `internal/migrate/sql/warehouse/001_watermarks.sql` — watermark tracking table
+- `cmd/eve/main.go` — added init command with JSON output
+- `go.mod` + `go.sum` — added sqlite3 driver dependency
+
+**Learnings:**
+- go:embed requires files to be in the same package or subdirectories (cannot use ../)
+- Moved migrations from assets/ to internal/migrate/sql/ to work with embed
+- Migration runner uses transaction per migration for atomicity
+- schema_migrations table tracks applied migrations by filename + timestamp
+- SQLite PRAGMA foreign_keys must be enabled explicitly
+- Idempotency achieved by checking schema_migrations before running each migration
+- Jobs table uses CHECK constraint for state validation (pending|leased|succeeded|failed|dead)
+- Partial indexes (WHERE clause) optimize queue operations for leased/pending jobs
+- Separate eve-queue.db prevents lock contention between queue and warehouse writes
+- All acceptance criteria met: embedded SQL, idempotent init, queue schema with jobs table

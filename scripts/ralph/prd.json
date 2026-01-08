@@ -1,0 +1,195 @@
+{
+  "project": "eve",
+  "branchName": "ralph/go-single-binary",
+  "phase": "go-single-binary",
+  "description": "Rewrite Eve into a single Go binary: ETL + durable queue + high-concurrency Gemini analysis + embeddings (no Python, no sidecars).",
+  "documentation": {
+    "docs/ralph/GO_SINGLE_BINARY_PLAN.md": "Full design + rationale",
+    "docs/ralph/EXECUTION_CHECKLIST.md": "Ordered execution steps + acceptance checks",
+    "docs/ralph/README.md": "Locked decisions and output contract"
+  },
+  "verification": {
+    "command": "./scripts/ralph/verify.sh",
+    "notes": "Must stay fast and deterministic (no real Gemini calls; no real-data ETL). Set RALPH_INCLUDE_TS=1 to include TypeScript typechecking."
+  },
+  "userStories": [
+    {
+      "id": "EVGO-001",
+      "title": "Add Go module + minimal eve binary (JSON output)",
+      "description": "Create a Go-based `eve` entrypoint that prints stable JSON for `version` and `paths` commands.",
+      "acceptanceCriteria": [
+        "go.mod exists",
+        "cmd/eve/main.go exists",
+        "`go build ./cmd/eve` succeeds",
+        "`./eve version` outputs JSON",
+        "`./eve paths` outputs JSON with app/db paths"
+      ],
+      "priority": 1,
+      "passes": true,
+      "files": [
+        "go.mod",
+        "cmd/eve/main.go",
+        "internal/config/*"
+      ],
+      "notes": "Do not delete the existing python CLI yet; this is additive."
+    },
+    {
+      "id": "EVGO-002",
+      "title": "Implement app dir + config loading (env overrides first)",
+      "description": "Implement config loading with env precedence and defaults for Gemini models.",
+      "acceptanceCriteria": [
+        "Env var support: GEMINI_API_KEY",
+        "Env var support: EVE_GEMINI_ANALYSIS_MODEL (default Gemini Flash 3.0)",
+        "Env var support: EVE_GEMINI_EMBED_MODEL (default latest embedding model string)",
+        "Config file path resolved under Eve app dir (config.json)"
+      ],
+      "priority": 2,
+      "passes": true,
+      "files": [
+        "internal/config/*"
+      ],
+      "notes": "Model IDs should be configurable; verify actual strings at runtime later."
+    },
+    {
+      "id": "EVGO-003",
+      "title": "Add embedded SQL migrations + eve init (eve.db + eve-queue.db)",
+      "description": "Create a migration runner using embedded .sql files. `eve init` creates/migrates both the warehouse DB and queue DB.",
+      "acceptanceCriteria": [
+        "SQL migrations embedded via go:embed",
+        "`eve init` is idempotent (can run twice)",
+        "Queue DB schema exists (jobs table at minimum)"
+      ],
+      "priority": 3,
+      "passes": true,
+      "files": [
+        "internal/migrate/*",
+        "internal/queue/*",
+        "assets/migrations/*"
+      ],
+      "notes": "Prefer separate eve-queue.db to avoid lock contention later."
+    },
+    {
+      "id": "EVGO-004",
+      "title": "Implement durable queue primitives (enqueue + lease + ack/fail)",
+      "description": "Build the SQLite queue engine: enqueue idempotently, lease batches with TTL, requeue expired leases, retry with backoff.",
+      "acceptanceCriteria": [
+        "Enqueue is idempotent via unique job key",
+        "Lease uses lease_owner + lease_expires_ts",
+        "Expired leases requeue on next scheduler tick",
+        "Unit tests cover enqueue/lease/retry behavior without external services"
+      ],
+      "priority": 4,
+      "passes": false,
+      "files": [
+        "internal/queue/*"
+      ],
+      "notes": "Keep tests deterministic; use temp SQLite files."
+    },
+    {
+      "id": "EVGO-005",
+      "title": "Add eve compute status (queue backlog JSON)",
+      "description": "Expose queue backlog stats for agents: counts by state, oldest pending age, etc.",
+      "acceptanceCriteria": [
+        "`eve compute status` outputs JSON",
+        "Includes counts for pending/leased/succeeded/failed/dead",
+        "Does not require any running background services"
+      ],
+      "priority": 5,
+      "passes": false,
+      "files": [
+        "cmd/eve/*",
+        "internal/queue/*"
+      ],
+      "notes": "This is the first agent-friendly operational command."
+    },
+    {
+      "id": "EVGO-006",
+      "title": "Gemini HTTP client (HTTP/2, retries) + fake-server tests",
+      "description": "Implement a Gemini REST client in Go with HTTP/2 pooling, timeouts, retry/backoff. Tests must use httptest (no real calls).",
+      "acceptanceCriteria": [
+        "Client supports analysis call (generateContent) and embedding call",
+        "Retries retryable failures (429, 5xx, network) with jitter",
+        "Unit tests verify retry behavior using httptest"
+      ],
+      "priority": 6,
+      "passes": false,
+      "files": [
+        "internal/gemini/*"
+      ],
+      "notes": "No gRPC libraries in Go deps."
+    },
+    {
+      "id": "EVGO-007",
+      "title": "Compute engine skeleton (scheduler + worker pools + writer)",
+      "description": "Implement `eve compute run` to lease jobs, run worker pools concurrently, and write results via a controlled writer to avoid sqlite locks.",
+      "acceptanceCriteria": [
+        "`eve compute run` drains queue in a deterministic unit test using fake jobs",
+        "Writer batches inserts into eve.db",
+        "Idempotency keys enforced at write time"
+      ],
+      "priority": 7,
+      "passes": false,
+      "files": [
+        "internal/engine/*",
+        "internal/db/*"
+      ],
+      "notes": "Start with fake job type; hook real analysis later."
+    },
+    {
+      "id": "EVGO-008",
+      "title": "Analysis job: read conversation, encode, Gemini Flash 3.0, persist",
+      "description": "Implement the real analysis job end-to-end (still tested with fake Gemini).",
+      "acceptanceCriteria": [
+        "Reads convo messages from eve.db using raw SQL",
+        "Encodes deterministically (initial simple encoding OK; parity later)",
+        "Calls Gemini analysis model (Flash 3.0) via internal client",
+        "Persists into conversation_analyses idempotently"
+      ],
+      "priority": 8,
+      "passes": false,
+      "files": [
+        "internal/engine/*",
+        "internal/encoding/*",
+        "internal/db/*"
+      ],
+      "notes": "Do not print message text in stdout; keep it in DB only."
+    },
+    {
+      "id": "EVGO-009",
+      "title": "Embeddings pipeline with batching + persist embeddings blobs",
+      "description": "Queue embedding jobs and batch them into Gemini embedding requests; persist vectors to embeddings table idempotently.",
+      "acceptanceCriteria": [
+        "Embeddings jobs can be enqueued and drained",
+        "Batcher groups texts and flushes by size or time",
+        "Persists to embeddings table without duplicates",
+        "All tests use fake Gemini server (no real calls)"
+      ],
+      "priority": 9,
+      "passes": false,
+      "files": [
+        "internal/engine/*",
+        "internal/embeddings/*",
+        "internal/db/*"
+      ],
+      "notes": "This is the main throughput path; design for high concurrency."
+    },
+    {
+      "id": "EVGO-010",
+      "title": "Port ETL: start with message count + watermark table",
+      "description": "Begin porting ETL to Go: open chat.db read-only, count messages, and store watermark state in eve.db.",
+      "acceptanceCriteria": [
+        "`eve sync --dry-run` outputs JSON counts (no message text)",
+        "Watermark table exists and is updated",
+        "No Python required for this path"
+      ],
+      "priority": 10,
+      "passes": false,
+      "files": [
+        "internal/etl/*",
+        "internal/db/*"
+      ],
+      "notes": "Break ETL into small stories after this bootstrap."
+    }
+  ]
+}
+
