@@ -147,3 +147,28 @@ Started: 2026-01-08
 - Queue design supports high-concurrency leasing by multiple workers
 - Lease TTL ensures jobs don't get stuck if worker crashes
 - All acceptance criteria met: idempotent enqueue, lease with TTL, requeue expired, comprehensive tests
+
+### EVGO-005 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Added GetStats() method to queue package for operational visibility
+- Implemented 'eve compute status' CLI command that outputs JSON
+- Returns counts for all job states (pending/leased/succeeded/failed/dead)
+- Includes oldest pending job timestamp for backlog age monitoring
+- Added comprehensive unit tests for GetStats (empty queue + mixed states)
+
+**Files changed:**
+- `internal/queue/queue.go` — added Stats struct and GetStats() method
+- `internal/queue/queue_test.go` — added TestGetStats_Empty and TestGetStats_WithJobs
+- `cmd/eve/main.go` — added compute command group with status subcommand
+
+**Learnings:**
+- GROUP BY aggregation in SQLite efficiently counts jobs by state
+- sql.NullInt64 correctly handles optional oldest_ts when queue is empty
+- JSON struct tags with omitempty prevent zero values from cluttering output
+- Compute command follows Cobra subcommand pattern (compute -> status)
+- Stats query is read-only and works without any background services
+- omitempty on oldest_pending_ts ensures clean JSON when no pending jobs
+- Agent-friendly JSON output enables programmatic queue monitoring
+- This is the first operational command that doesn't modify any data
+- All acceptance criteria met: JSON output, all state counts, no background services required

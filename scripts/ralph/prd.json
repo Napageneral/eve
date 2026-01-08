@@ -95,7 +95,7 @@
         "Does not require any running background services"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "files": [
         "cmd/eve/*",
         "internal/queue/*"
