@@ -79,7 +79,7 @@
         "Unit tests cover enqueue/lease/retry behavior without external services"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "files": [
         "internal/queue/*"
       ],

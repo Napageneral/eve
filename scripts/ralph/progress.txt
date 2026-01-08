@@ -117,3 +117,33 @@ Started: 2026-01-08
 - Partial indexes (WHERE clause) optimize queue operations for leased/pending jobs
 - Separate eve-queue.db prevents lock contention between queue and warehouse writes
 - All acceptance criteria met: embedded SQL, idempotent init, queue schema with jobs table
+
+### EVGO-004 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented complete durable queue system with all core primitives
+- Enqueue: idempotent job insertion via unique key constraint
+- Lease: atomic batch leasing with lease_owner and lease_expires_ts
+- RequeueExpired: moves expired leases back to pending state
+- Ack: marks jobs as succeeded
+- Fail: handles retry with exponential backoff or moves to dead state after max attempts
+- 17 comprehensive unit tests covering all operations and edge cases
+
+**Files changed:**
+- `internal/queue/queue.go` — complete queue implementation with all primitives
+- `internal/queue/queue_test.go` — 17 deterministic unit tests using temp SQLite files
+- `go.mod` + `go.sum` — added github.com/google/uuid dependency
+
+**Learnings:**
+- Idempotent enqueue uses `INSERT ... ON CONFLICT(key) DO NOTHING` to skip duplicates
+- Lease operation requires transaction to atomically query + update job state
+- Building dynamic IN clauses in Go requires careful placeholder management
+- RequeueExpired is scheduler's responsibility to call periodically
+- Exponential backoff: 2^attempts seconds (1s, 2s, 4s, 8s, etc.)
+- Job failure checks attempts vs max_attempts to decide between pending and dead state
+- sql.NullString and sql.NullInt64 handle optional lease_owner/lease_expires_ts fields
+- Unit tests use os.CreateTemp for deterministic temporary SQLite databases
+- All tests pass without any external services (no Gemini, no real data)
+- Queue design supports high-concurrency leasing by multiple workers
+- Lease TTL ensures jobs don't get stuck if worker crashes
+- All acceptance criteria met: idempotent enqueue, lease with TTL, requeue expired, comprehensive tests
