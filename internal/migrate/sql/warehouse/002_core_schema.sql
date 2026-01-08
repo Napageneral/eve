@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS reactions (
     sender_id INTEGER,
     chat_id INTEGER,
     reaction_type INTEGER,
+    is_from_me BOOLEAN DEFAULT 0,
     guid TEXT UNIQUE NOT NULL,
     FOREIGN KEY (original_message_guid) REFERENCES messages(guid),
     FOREIGN KEY (sender_id) REFERENCES contacts(id),

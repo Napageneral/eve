@@ -94,6 +94,17 @@ type EmbedContentResponse struct {
 	Error     *APIError  `json:"error,omitempty"`
 }
 
+// BatchEmbedContentsRequest represents the request for batchEmbedContents API
+type BatchEmbedContentsRequest struct {
+	Requests []EmbedContentRequest `json:"requests"`
+}
+
+// BatchEmbedContentsResponse represents the response from batchEmbedContents API
+type BatchEmbedContentsResponse struct {
+	Embeddings []Embedding `json:"embeddings,omitempty"`
+	Error      *APIError   `json:"error,omitempty"`
+}
+
 // Embedding represents an embedding vector
 type Embedding struct {
 	Values []float64 `json:"values"`
@@ -231,6 +242,85 @@ func (c *Client) EmbedContent(req *EmbedContentRequest) (*EmbedContentResponse, 
 
 		// Parse response
 		var result EmbedContentResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+
+		// Check for API error
+		if result.Error != nil {
+			if isRetryableStatus(result.Error.Code) {
+				lastErr = result.Error
+				continue
+			}
+			return nil, result.Error
+		}
+
+		// Success
+		return &result, nil
+	}
+
+	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+// BatchEmbedContents calls the Gemini batchEmbedContents API for batch embeddings
+// Returns the response or an error with retry logic
+func (c *Client) BatchEmbedContents(model string, requests []EmbedContentRequest) (*BatchEmbedContentsResponse, error) {
+	url := fmt.Sprintf("%s/models/%s:batchEmbedContents?key=%s", baseURL, model, c.apiKey)
+
+	// Set model in each request
+	for i := range requests {
+		requests[i].Model = model
+	}
+
+	batchReq := BatchEmbedContentsRequest{
+		Requests: requests,
+	}
+
+	body, err := json.Marshal(batchReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Calculate exponential backoff with jitter
+			backoff := calculateBackoff(attempt)
+			time.Sleep(backoff)
+		}
+
+		httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HttpClient.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("request failed: %w", err)
+			if isRetryable(err, 0) {
+				continue
+			}
+			return nil, lastErr
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			continue
+		}
+
+		// Check for retryable HTTP status codes
+		if isRetryableStatus(resp.StatusCode) {
+			lastErr = fmt.Errorf("retryable status code %d", resp.StatusCode)
+			continue
+		}
+
+		// Parse response
+		var result BatchEmbedContentsResponse
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 		}

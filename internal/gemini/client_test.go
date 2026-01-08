@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -480,4 +481,159 @@ func TestJSONSerialization(t *testing.T) {
 	if len(decodedEmbedResp.Embedding.Values) != 3 {
 		t.Errorf("expected 3 values, got %d", len(decodedEmbedResp.Embedding.Values))
 	}
+}
+
+// TestBatchEmbedContents_Success tests successful batch embedContent call
+func TestBatchEmbedContents_Success(t *testing.T) {
+	expectedResp := BatchEmbedContentsResponse{
+		Embeddings: []Embedding{
+			{Values: []float64{0.1, 0.2, 0.3}},
+			{Values: []float64{0.4, 0.5, 0.6}},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request method and headers
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %s", ct)
+		}
+
+		// Verify URL path
+		if !strings.Contains(r.URL.Path, "batchEmbedContents") {
+			t.Errorf("expected batchEmbedContents in path, got %s", r.URL.Path)
+		}
+
+		// Verify request body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+
+		var batchReq BatchEmbedContentsRequest
+		if err := json.Unmarshal(body, &batchReq); err != nil {
+			t.Fatalf("failed to unmarshal request: %v", err)
+		}
+
+		if len(batchReq.Requests) != 2 {
+			t.Errorf("expected 2 requests, got %d", len(batchReq.Requests))
+		}
+
+		// Return success response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(expectedResp)
+	}))
+	defer server.Close()
+
+	// Create client with test server URL
+	client := NewClient("test-api-key")
+	client.HttpClient.Transport = &testRoundTripper{server: server}
+
+	// Make batch request
+	requests := []EmbedContentRequest{
+		{
+			Model: "text-embedding-005",
+			Content: Content{
+				Parts: []Part{{Text: "First text"}},
+			},
+		},
+		{
+			Model: "text-embedding-005",
+			Content: Content{
+				Parts: []Part{{Text: "Second text"}},
+			},
+		},
+	}
+
+	resp, err := client.BatchEmbedContents("text-embedding-005", requests)
+	if err != nil {
+		t.Fatalf("BatchEmbedContents failed: %v", err)
+	}
+
+	// Verify response
+	if len(resp.Embeddings) != 2 {
+		t.Errorf("expected 2 embeddings, got %d", len(resp.Embeddings))
+	}
+
+	if len(resp.Embeddings[0].Values) != 3 {
+		t.Errorf("expected 3 values in first embedding, got %d", len(resp.Embeddings[0].Values))
+	}
+
+	if len(resp.Embeddings[1].Values) != 3 {
+		t.Errorf("expected 3 values in second embedding, got %d", len(resp.Embeddings[1].Values))
+	}
+}
+
+// TestBatchEmbedContents_Retry tests retry logic for batch embeddings
+func TestBatchEmbedContents_Retry(t *testing.T) {
+	var attempts int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&attempts, 1)
+
+		// Fail first 2 attempts with 503
+		if count <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(BatchEmbedContentsResponse{
+				Error: &APIError{
+					Code:    503,
+					Message: "Service unavailable",
+					Status:  "UNAVAILABLE",
+				},
+			})
+			return
+		}
+
+		// Succeed on third attempt
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(BatchEmbedContentsResponse{
+			Embeddings: []Embedding{
+				{Values: []float64{0.1, 0.2, 0.3}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient("test-api-key")
+	client.HttpClient.Transport = &testRoundTripper{server: server}
+
+	// Make request (should retry and succeed)
+	requests := []EmbedContentRequest{
+		{
+			Model: "text-embedding-005",
+			Content: Content{
+				Parts: []Part{{Text: "Test text"}},
+			},
+		},
+	}
+
+	resp, err := client.BatchEmbedContents("text-embedding-005", requests)
+	if err != nil {
+		t.Fatalf("BatchEmbedContents failed: %v", err)
+	}
+
+	// Verify we retried
+	if atomic.LoadInt32(&attempts) != 3 {
+		t.Errorf("expected 3 attempts, got %d", atomic.LoadInt32(&attempts))
+	}
+
+	// Verify response
+	if len(resp.Embeddings) != 1 {
+		t.Errorf("expected 1 embedding, got %d", len(resp.Embeddings))
+	}
+}
+
+// testRoundTripper redirects all requests to a test server
+type testRoundTripper struct {
+	server *httptest.Server
+}
+
+func (t *testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Redirect to test server, preserving the path for verification
+	req.URL.Scheme = "http"
+	req.URL.Host = t.server.Listener.Addr().String()
+	// Keep the original path so tests can verify it
+	return http.DefaultTransport.RoundTrip(req)
 }
