@@ -10,6 +10,7 @@ from backend.celery_service.constants import (
 from backend.services.core.constants import TaskDefaults
 import re
 import json
+import os
 from backend.services.llm import LLMService, LLMConfigResolver
 import logging
 
@@ -557,7 +558,14 @@ class ConversationAnalysisWorkflow:
                 "timings": llm_response.get("timings", {}),
             },
             "llm_finish_ts": _time.time(),
-            "compiled_prompt": final_prompt,
+            # Avoid sending full compiled prompt through Celery/Redis by default.
+            # This can be extremely large (contains encoded conversation text) and can also
+            # leak private content into broker payloads/logs. Enable only for debugging.
+            **(
+                {"compiled_prompt": final_prompt}
+                if os.getenv("EVE_INCLUDE_COMPILED_PROMPT_IN_PAYLOAD", "0").lower() in ("1", "true", "yes", "on")
+                else {}
+            ),
         }
 
     @staticmethod
@@ -568,7 +576,8 @@ class ConversationAnalysisWorkflow:
         convo_id = int(payload["convo_id"])
         chat_id = int(payload["chat_id"])
         ca_row_id = int(payload["ca_row_id"])
-        prompt_template_db_id = int(payload["prompt_template_db_id"])
+        _ptid = payload.get("prompt_template_db_id")
+        prompt_template_db_id = int(_ptid) if _ptid is not None else None
         model_name = payload.get("model_name", "")
         llm_response = payload.get("llm_response", {}) or {}
 
@@ -592,6 +601,7 @@ class ConversationAnalysisWorkflow:
             prompt_template_db_id=prompt_template_db_id,
             conversation_analysis_row_id=ca_row_id,
             compiled_prompt_for_llm=payload.get("compiled_prompt"),
+            eve_prompt_id=payload.get("eve_prompt_id"),
         )
         # Quiet persist log
         _RM.record_stage("persist_ms", (_time.monotonic() - _t_persist0) * 1000.0)

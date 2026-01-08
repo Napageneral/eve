@@ -222,4 +222,3 @@ eve/
 4. Sending (Messages.app):
    - Option A: shell out to `imsg send` (dependency, simplest)
    - Option B: port the AppleScript/ScriptingBridge approach into Eve (more control)
-

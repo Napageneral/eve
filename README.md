@@ -41,4 +41,3 @@ eve compute up --pretty
 eve compute status --pretty
 eve compute down --pretty
 ```
-

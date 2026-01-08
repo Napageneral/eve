@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 import shutil
@@ -196,6 +197,33 @@ def cmd_sync(args: argparse.Namespace) -> int:
     # Ensure schema exists
     asyncio.run(startup_db.apply_migrations())
 
+    # Optional: constrain import window (still real data, just bounded).
+    since_date = None
+    try:
+        since_raw = getattr(args, "since", None)
+        since_days = getattr(args, "since_days", None)
+        if since_raw and since_days is not None:
+            _print_json(
+                {"ok": False, "error": "invalid_args", "message": "Use only one of --since or --since-days"},
+                pretty=getattr(args, "pretty", False),
+            )
+            return 2
+        if since_raw:
+            s = str(since_raw).strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            since_date = datetime.fromisoformat(s)
+            if since_date.tzinfo is None:
+                since_date = since_date.replace(tzinfo=timezone.utc)
+        elif since_days is not None:
+            since_date = datetime.now(timezone.utc) - timedelta(days=float(since_days))
+    except Exception as e:
+        _print_json(
+            {"ok": False, "error": "invalid_args", "message": f"Failed to parse --since/--since-days: {e}"},
+            pretty=getattr(args, "pretty", False),
+        )
+        return 2
+
     # Capture a source watermark boundary BEFORE importing so we never miss messages
     # that arrive while the ETL is running.
     source_db = os.getenv("EVE_SOURCE_CHAT_DB") or get_live_chat_db_path()
@@ -233,7 +261,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     # Keep stdout clean (ETL prints progress)
     with contextlib.redirect_stdout(sys.stderr):
-        import_live_data(since_date=None, race_mode=args.race_mode, include_contacts=not args.no_contacts)
+        import_live_data(since_date=since_date, race_mode=args.race_mode, include_contacts=not args.no_contacts)
 
     # Persist live-sync watermarks so `eve watch` can pick up incremental updates reliably.
     try:
@@ -272,6 +300,181 @@ def cmd_sync(args: argparse.Namespace) -> int:
     }
     _print_json(payload, pretty=getattr(args, "pretty", False))
     return 0
+
+
+def cmd_compute_analyze(args: argparse.Namespace) -> int:
+    """Trigger an analysis pass for a conversation and optionally wait for completion (real data)."""
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    # Ensure any imports that read settings pick up the broker we want to use.
+    # This matters when `eve compute up` is started on a non-default Redis port.
+    redis_port = int(getattr(args, "redis_port", 6379))
+    broker_url = f"redis://127.0.0.1:{redis_port}/0"
+    os.environ["EVE_REDIS_URL"] = broker_url
+    os.environ.setdefault("CHATSTATS_REDIS_URL", broker_url)
+
+    from backend.config import settings, configure_logging  # type: ignore
+    configure_logging(force=True)
+
+    db_path = str(settings.db_path)
+    if not Path(db_path).exists():
+        _print_json({"ok": False, "error": "db_missing", "db_path": db_path}, pretty=getattr(args, "pretty", False))
+        return 2
+
+    pass_name = str(getattr(args, "pass_name", "basic") or "basic")
+
+    convo_id = getattr(args, "conversation_id", None)
+    chat_id = getattr(args, "chat_id", None)
+    latest = bool(getattr(args, "latest", False))
+
+    # Resolve convo_id/chat_id
+    try:
+        with _db_connect(db_path) as conn:
+            cur = conn.cursor()
+            if latest or (convo_id is None and chat_id is None):
+                row = cur.execute(
+                    "SELECT id, chat_id FROM conversations ORDER BY end_time DESC, id DESC LIMIT 1"
+                ).fetchone()
+                if not row:
+                    _print_json({"ok": False, "error": "no_conversations"}, pretty=getattr(args, "pretty", False))
+                    return 2
+                convo_id = int(row["id"])
+                chat_id = int(row["chat_id"])
+            elif convo_id is not None and chat_id is None:
+                row = cur.execute("SELECT chat_id FROM conversations WHERE id = ? LIMIT 1", (int(convo_id),)).fetchone()
+                if not row:
+                    _print_json(
+                        {"ok": False, "error": "conversation_not_found", "conversation_id": int(convo_id)},
+                        pretty=getattr(args, "pretty", False),
+                    )
+                    return 2
+                chat_id = int(row["chat_id"])
+            elif convo_id is None and chat_id is not None:
+                row = cur.execute(
+                    "SELECT id, chat_id FROM conversations WHERE chat_id = ? ORDER BY end_time DESC, id DESC LIMIT 1",
+                    (int(chat_id),),
+                ).fetchone()
+                if not row:
+                    _print_json(
+                        {"ok": False, "error": "no_conversations_for_chat", "chat_id": int(chat_id)},
+                        pretty=getattr(args, "pretty", False),
+                    )
+                    return 2
+                convo_id = int(row["id"])
+                chat_id = int(row["chat_id"])
+            else:
+                convo_id = int(convo_id)
+                chat_id = int(chat_id)
+    except Exception as e:
+        _print_json({"ok": False, "error": "db_error", "message": str(e)}, pretty=getattr(args, "pretty", False))
+        return 1
+
+    # Enqueue analysis
+    try:
+        from backend.celery_service.analysis_passes import get_pass_config, trigger_analysis_pass  # type: ignore
+
+        cfg = get_pass_config(pass_name) or {}
+        eve_prompt_id = cfg.get("eve_prompt_id")
+
+        task_id = trigger_analysis_pass(int(convo_id), int(chat_id), pass_name)
+    except Exception as e:
+        _print_json(
+            {
+                "ok": False,
+                "error": "enqueue_failed",
+                "conversation_id": int(convo_id),
+                "chat_id": int(chat_id),
+                "pass": pass_name,
+                "message": str(e),
+            },
+            pretty=getattr(args, "pretty", False),
+        )
+        return 1
+
+    if not bool(getattr(args, "wait", False)):
+        _print_json(
+            {
+                "ok": True,
+                "enqueued": True,
+                "task_id": task_id,
+                "conversation_id": int(convo_id),
+                "chat_id": int(chat_id),
+                "pass": pass_name,
+                "eve_prompt_id": eve_prompt_id,
+            },
+            pretty=getattr(args, "pretty", False),
+        )
+        return 0
+
+    timeout_s = float(getattr(args, "timeout_seconds", 900.0) or 900.0)
+    require_embeddings = bool(getattr(args, "require_embeddings", False))
+
+    deadline = time.time() + timeout_s
+    last_row: dict[str, Any] | None = None
+    emb_count: int | None = None
+
+    while time.time() < deadline:
+        try:
+            with _db_connect(db_path) as conn:
+                cur = conn.cursor()
+                if eve_prompt_id:
+                    r = cur.execute(
+                        "SELECT id, status, error_message, updated_at FROM conversation_analyses WHERE conversation_id = ? AND eve_prompt_id = ? ORDER BY id DESC LIMIT 1",
+                        (int(convo_id), str(eve_prompt_id)),
+                    ).fetchone()
+                else:
+                    r = cur.execute(
+                        "SELECT id, status, error_message, updated_at FROM conversation_analyses WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+                        (int(convo_id),),
+                    ).fetchone()
+                if r:
+                    last_row = {
+                        "id": int(r["id"]),
+                        "status": r["status"],
+                        "error_message": r["error_message"],
+                        "updated_at": r["updated_at"],
+                    }
+
+                if require_embeddings:
+                    er = cur.execute(
+                        "SELECT COUNT(*) AS c FROM embeddings WHERE conversation_id = ?",
+                        (str(convo_id),),
+                    ).fetchone()
+                    emb_count = int((er or {"c": 0})["c"])
+                else:
+                    emb_count = None
+        except Exception:
+            # transient (e.g., sqlite busy) – keep polling
+            pass
+
+        status = (last_row or {}).get("status")
+        if status in ("success", "failed"):
+            if require_embeddings:
+                if emb_count and emb_count > 0:
+                    break
+            else:
+                break
+
+        time.sleep(1.0)
+
+    ok = bool(last_row and last_row.get("status") == "success" and (not require_embeddings or (emb_count or 0) > 0))
+    _print_json(
+        {
+            "ok": ok,
+            "conversation_id": int(convo_id),
+            "chat_id": int(chat_id),
+            "pass": pass_name,
+            "eve_prompt_id": eve_prompt_id,
+            "task_id": task_id,
+            "redis_port": redis_port,
+            "analysis": last_row,
+            "embeddings": {"required": require_embeddings, "count": emb_count},
+            "timeout_seconds": timeout_s,
+        },
+        pretty=getattr(args, "pretty", False),
+    )
+    return 0 if ok else 1
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -672,6 +875,8 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
                 "-A",
                 "backend.celery_service.app",
                 "worker",
+                "-n",
+                "eve-analysis@%h",
                 "-Q",
                 "chatstats-analysis,chatstats-embeddings,chatstats-events,chatstats-bulk,chatstats-report,chatstats-display",
                 "-P",
@@ -688,6 +893,10 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
         )
 
         # DB worker (single writer)
+        # IMPORTANT: DB worker does not need gevent monkey patching and on some
+        # Python versions it can break Celery's consumer/control loop.
+        env_db = dict(env_celery)
+        env_db["CHATSTATS_DISABLE_GEVENT_PATCH"] = "1"
         out["started"]["celery_worker_db"] = _start_process(
             name="celery_worker_db",
             cmd=[
@@ -697,6 +906,8 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
                 "-A",
                 "backend.celery_service.app",
                 "worker",
+                "-n",
+                "eve-db@%h",
                 "-Q",
                 "chatstats-db",
                 "--concurrency",
@@ -705,12 +916,14 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
                 env_celery["CELERY_LOG_LEVEL"],
             ],
             cwd=str(repo),
-            env=env_celery,
+            env=env_db,
             pid_path=run_dir / "celery-db.pid",
             log_path=run_dir / "celery-db.log",
         )
 
         # Beat scheduler (periodic sealing + FAISS rebuild coalescer)
+        env_beat = dict(env_celery)
+        env_beat["CHATSTATS_DISABLE_GEVENT_PATCH"] = "1"
         out["started"]["celery_beat"] = _start_process(
             name="celery_beat",
             cmd=[
@@ -727,7 +940,7 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
                 str(run_dir / "celerybeat-schedule"),
             ],
             cwd=str(repo),
-            env=env_celery,
+            env=env_beat,
             pid_path=run_dir / "celery-beat.pid",
             log_path=run_dir / "celery-beat.log",
         )
@@ -866,6 +1079,8 @@ def build_parser() -> argparse.ArgumentParser:
     psync = sub.add_parser("sync", help="Run one-shot ETL import from chat.db into eve.db", parents=[common_sub])
     psync.add_argument("--race-mode", action="store_true", help="Enable race mode for first import (unsafe PRAGMAs)")
     psync.add_argument("--no-contacts", action="store_true", help="Skip AddressBook contact import")
+    psync.add_argument("--since", default=None, help="Only import messages since ISO timestamp (e.g. 2026-01-01T00:00:00Z)")
+    psync.add_argument("--since-days", type=float, default=None, help="Only import last N days (real data, bounded)")
     psync.set_defaults(func=cmd_sync)
 
     pw = sub.add_parser("watch", help="Run live sync watcher (bounded for tests via --seconds/--max-batches)", parents=[common_sub])
@@ -900,6 +1115,17 @@ def build_parser() -> argparse.ArgumentParser:
     pstat.add_argument("--redis-port", type=int, default=6379)
     pstat.add_argument("--context-port", type=int, default=3031)
     pstat.set_defaults(func=cmd_compute_status)
+
+    pan = pcompute_sub.add_parser("analyze", help="Trigger analysis pass for a conversation (optionally wait)", parents=[common_sub])
+    pan.add_argument("--pass", dest="pass_name", default="basic", help="Analysis pass name (default: basic)")
+    pan.add_argument("--conversation-id", type=int, default=None, help="Conversation ID (defaults to latest)")
+    pan.add_argument("--chat-id", type=int, default=None, help="Chat ID (optional; derived from conversation)")
+    pan.add_argument("--latest", action="store_true", help="Use latest conversation (default if no ids provided)")
+    pan.add_argument("--redis-port", type=int, default=6379, help="Redis port to use when enqueuing (must match compute up)")
+    pan.add_argument("--wait", action="store_true", help="Wait for analysis completion")
+    pan.add_argument("--timeout-seconds", type=float, default=900.0, help="Max seconds to wait (default: 900)")
+    pan.add_argument("--require-embeddings", action="store_true", help="When waiting, also require embeddings rows for this conversation")
+    pan.set_defaults(func=cmd_compute_analyze)
 
     pdb = sub.add_parser("db", help="Serverless eve.db access helpers", parents=[common_sub])
     pdb_sub = pdb.add_subparsers(dest="db_cmd", required=True)

@@ -1,5 +1,6 @@
 """Metrics to identify QPS bottlenecks."""
 
+import os
 import time
 import threading
 from typing import Dict, Any, Optional
@@ -10,16 +11,36 @@ class BottleneckMetrics:
     """Track where workers spend time to identify bottlenecks."""
     
     _local = threading.local()
+    _enabled = os.getenv("EVE_ENABLE_BOTTLENECK_METRICS", os.getenv("CHATSTATS_ENABLE_BOTTLENECK_METRICS", "0")).lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     
     @classmethod
     @contextmanager
     def track_stage(cls, stage: str):
         """Context manager to track time in different stages."""
-        start = time.monotonic()
+        if not cls._enabled:
+            yield
+            return
+
+        # Celery soft time limit signals can surface as exceptions in surprising places.
+        # Never let metrics crash worker threads (e.g., DBBulkFlusher).
+        try:
+            start = time.monotonic()
+        except Exception:
+            start = None
         try:
             yield
         finally:
-            duration_ms = (time.monotonic() - start) * 1000
+            if start is None:
+                return
+            try:
+                duration_ms = (time.monotonic() - start) * 1000
+            except Exception:
+                return
             cls._record_stage_time(stage, duration_ms)
     
     @classmethod
