@@ -136,3 +136,27 @@ All 10 stories passed:
 
 ---
 
+### EVGO-015 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented BuildConversations() to group messages into conversations based on time gaps
+- Groups messages by chat_id and orders by timestamp
+- Splits into new conversation when time gap between messages > 3 hours (10800 seconds)
+- Creates conversation records with chat_id, initiator_id, start_time, end_time, message_count, gap_threshold
+- Updates messages.conversation_id to reference their conversation
+- Idempotent via clearConversationAssignments() which rebuilds from scratch each time
+**Files changed:**
+- internal/etl/conversations.go (new)
+- internal/etl/conversations_test.go (new)
+**Learnings:**
+- 3-hour gap threshold matches original ChatStats logic for conversation grouping
+- Initiator_id is set to the sender_id of the first message in each conversation
+- NULL sender_id (is_from_me messages) results in NULL initiator_id for conversation
+- Gap logic: if time since last message > threshold, start new conversation
+- Edge case: gap exactly equal to 3 hours stays in same conversation (only > splits)
+- Idempotency achieved by clearing all existing conversation assignments and rebuilding
+- Test coverage includes: single conversation, multiple conversations with gaps, multiple chats, empty database, idempotency, boundary conditions, and NULL sender handling
+- conversationGroup helper struct holds message IDs for batch updating conversation_id
+
+---
+

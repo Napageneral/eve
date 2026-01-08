@@ -89,7 +89,7 @@
         "Unit tests"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "files": ["internal/etl/conversations.go", "internal/etl/conversations_test.go"],
       "notes": "3-hour gap threshold matches the original ChatStats logic."
     },
