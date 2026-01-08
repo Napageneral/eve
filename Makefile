@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help tree py-check py-install py-test ts-check ts-install test test-ts test-py
+.PHONY: ralph-verify
 
 help:
 	@echo "Eve (WIP)"
@@ -52,3 +53,32 @@ test-ts:
 	@bun run --bun test/unit/preset-ea-spawning.test.ts
 
 test-py: py-test
+
+# --- Ralph (agent loop verification harness) ---
+#
+# This target is intentionally:
+# - fast
+# - non-interactive
+# - safe (no real-data ETL, no cloud calls)
+#
+# It provides the "Feedback" mechanism for Ralph loops.
+ralph-verify:
+	@echo "Ralph verify: starting"
+	@echo ""
+	@echo "1) Python import graph (fast)"
+	@$(MAKE) py-check
+	@echo ""
+	@echo "2) TypeScript typecheck (fast)"
+	@$(MAKE) ts-check
+	@echo ""
+	@echo "3) Go tests (only if go.mod exists)"
+	@if [ -f go.mod ]; then \
+		echo "Running gofmt + go test ./..."; \
+		command -v go >/dev/null 2>&1 || (echo "go not found" && exit 1); \
+		gofmt -w $$(find . -name '*.go' -not -path './ts/node_modules/*' 2>/dev/null || true) >/dev/null 2>&1 || true; \
+		go test ./...; \
+	else \
+		echo "go.mod not present yet; skipping Go tests"; \
+	fi
+	@echo ""
+	@echo "Ralph verify: OK"

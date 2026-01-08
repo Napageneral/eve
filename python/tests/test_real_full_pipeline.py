@@ -56,7 +56,12 @@ class TestEveRealFullPipeline(unittest.TestCase):
         # Keep test isolated from user's real Eve app dir; still uses REAL source data.
         with tempfile.TemporaryDirectory(prefix="eve-real-full-pipeline-") as app_dir:
             redis_port = pick_free_port()
+            redis_metrics_port = pick_free_port()
+            while redis_metrics_port == redis_port:
+                redis_metrics_port = pick_free_port()
             context_port = pick_free_port()
+            while context_port in (redis_port, redis_metrics_port):
+                context_port = pick_free_port()
 
             env = os.environ.copy()
             env["EVE_APP_DIR"] = app_dir
@@ -64,6 +69,12 @@ class TestEveRealFullPipeline(unittest.TestCase):
             env["EVE_LOG_TO_STDERR"] = "1"
             # Keep test logs quieter (stdout stays JSON-only regardless).
             env.setdefault("CELERY_LOG_LEVEL", "WARNING")
+            env.setdefault("CELERY_ANALYSIS_LOG_LEVEL", "WARNING")
+            # Keep the worker topology tiny for tests (ChatStats defaults are huge).
+            env.setdefault("CELERY_ANALYSIS_WORKER_PROCS", "1")
+            env.setdefault("CELERY_EMBED_GEVENT_PROCS", "1")
+            env.setdefault("CELERY_DB_WORKERS", "1")
+            env.setdefault("CELERY_SPAWN_JITTER_MS", "0")
 
             # 1) init
             out = run_eve("init", "--app-dir", app_dir, "--source-chat-db", chat_db, env=env)
@@ -124,6 +135,8 @@ class TestEveRealFullPipeline(unittest.TestCase):
                 app_dir,
                 "--redis-port",
                 str(redis_port),
+                "--redis-metrics-port",
+                str(redis_metrics_port),
                 "--context-port",
                 str(context_port),
                 "--celery-concurrency",
@@ -147,6 +160,8 @@ class TestEveRealFullPipeline(unittest.TestCase):
                     str(chat_id),
                     "--redis-port",
                     str(redis_port),
+                    "--redis-metrics-port",
+                    str(redis_metrics_port),
                     "--wait",
                     "--require-embeddings",
                     "--timeout-seconds",

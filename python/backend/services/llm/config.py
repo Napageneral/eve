@@ -81,7 +81,18 @@ def configure_litellm():
         force_h1 = os.getenv("FORCE_HTTP1", "0").lower() in ("1", "true", "yes")
         logger.info("LiteLLM HTTPX pools ready (http2=%s)", "0" if force_h1 else os.getenv("LITELLM_HTTP2", "1"))
     except Exception as e:
-        logger.warning("Failed to build shared httpx clients; falling back to defaults: %s", e)
+        # Most common failure in our environment: http2 requested but `h2` extra isn't installed.
+        # Rather than falling back to *default* httpx pools (which can crush throughput), retry
+        # immediately with HTTP/1.1 while still using large tuned pools.
+        logger.warning("Failed to build shared httpx clients; retrying with http2 disabled: %s", e)
+        try:
+            os.environ["FORCE_HTTP1"] = "1"
+            client, aclient = _build_shared_httpx_clients()
+            litellm.client_session = client
+            litellm.aclient_session = aclient
+            logger.warning("LiteLLM HTTPX pools ready (http2=0 fallback)")
+        except Exception as e2:
+            logger.warning("Failed to build shared httpx clients; falling back to defaults: %s", e2)
 
     # Set default behavior
     litellm.drop_params = True  # Drop unsupported params instead of failing
