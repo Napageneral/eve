@@ -128,7 +128,7 @@
         "Idempotency keys enforced at write time"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "files": [
         "internal/engine/*",
         "internal/db/*"

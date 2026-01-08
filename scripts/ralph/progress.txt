@@ -199,3 +199,36 @@ Started: 2026-01-08
 - JSON marshaling/unmarshaling tests verify request/response struct correctness
 - All tests are deterministic and cheap (no external API dependencies)
 - All acceptance criteria met: both API methods implemented, retry logic with jitter, httptest-based unit tests
+
+### EVGO-007 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented complete compute engine with scheduler, worker pools, and database writer
+- Scheduler leases jobs in batches and distributes them to worker pool
+- Workers process jobs concurrently and handle success/failure cases
+- Periodic requeue of expired leases to handle crashed workers
+- Database writer batches operations for efficient bulk inserts
+- Added `eve compute run` command with timeout and signal handling
+- Registered fake job handler for testing the engine end-to-end
+
+**Files changed:**
+- `internal/engine/engine.go` — Full compute engine implementation (scheduler + workers)
+- `internal/engine/engine_test.go` — 5 comprehensive tests covering empty queue, success, failure, unknown types, and idempotency
+- `internal/db/writer.go` — Batched database writer with timer-based and size-based flushing
+- `internal/db/writer_test.go` — 7 tests covering batch flush, timer flush, transactions, and idempotency
+- `cmd/eve/main.go` — Added `eve compute run` command with worker count and timeout flags
+- `internal/queue/queue.go` — Added retry with backoff for Ack/Fail operations to handle SQLite lock contention
+
+**Learnings:**
+- SQLite requires WAL mode and busy_timeout for concurrent access from multiple workers
+- Connection pool settings (MaxOpenConns, MaxIdleConns) are critical for multi-worker scenarios
+- Database lock errors are transient and should be retried with exponential backoff
+- Retry logic added to Ack() and Fail() operations: 5 attempts with 10ms, 20ms, 40ms, 80ms, 160ms backoff
+- Worker pool pattern: scheduler leases jobs → sends to channel → workers consume from channel
+- Context-based cancellation enables graceful shutdown on signals (SIGINT/SIGTERM)
+- Requeue goroutine runs independently to recover expired leases from crashed workers
+- FakeJobHandler allows testing the entire engine without real job implementations
+- All tests pass deterministically using temp SQLite files with WAL mode
+- Writer uses time-based (1s) and size-based (100 ops) flush triggers
+- Batched writes in single transaction ensure atomicity
+- All acceptance criteria met: drains queue in tests, writer batches operations, ready for idempotency keys
