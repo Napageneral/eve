@@ -104,7 +104,7 @@
         "Full integration test with synthetic chat.db"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "files": ["cmd/eve/main.go", "internal/etl/sync.go"],
       "notes": "After this, Python ETL can be deleted."
     },

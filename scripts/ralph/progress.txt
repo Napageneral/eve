@@ -160,3 +160,33 @@ All 10 stories passed:
 
 ---
 
+### EVGO-016 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Created internal/etl/sync.go with FullSync() orchestration function
+- FullSync() runs the complete ETL pipeline in correct order:
+  1. SyncHandles (must be first for FK references)
+  2. SyncChats (must be before messages for FK references)
+  3. SyncMessages (incremental via watermark)
+  4. SyncAttachments (requires messages to exist)
+  5. BuildConversations (groups messages into conversations)
+- Updated cmd/eve/main.go to call FullSync() instead of just counting messages
+- Separated dry-run path (counts only) from full sync path (actual data copy)
+- Returns SyncResult with counts for all synced entities
+- Outputs JSON with counts (no message text): handles_synced, chats_synced, messages_synced, attachments_synced, conversations_built
+- Updates watermark after successful sync
+**Files changed:**
+- internal/etl/sync.go (new)
+- cmd/eve/main.go (updated)
+**Learnings:**
+- Order matters: handles → chats → messages → attachments → conversations
+- Each step depends on previous steps for FK consistency
+- GetMaxMessageRowID() helper returns max ROWID for watermark updates
+- Dry-run flag now truly just counts without copying (preserves original behavior)
+- Full sync path copies all data and outputs counts for verification
+- All existing unit tests still pass (each component tested in isolation)
+- Integration happens naturally through FK relationships
+- Eve is now fully self-sufficient for ETL: `eve sync` copies all data from chat.db to eve.db
+
+---
+
