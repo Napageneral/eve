@@ -67,3 +67,24 @@ All 10 stories passed:
 - Test helper naming collision: renamed to createTestWarehouseDBWithContacts() to avoid conflict with watermark_test.go
 
 ---
+### EVGO-012 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented SyncChats() to copy chats from chat.db to eve.db
+- Reads all chats with ROWID, chat_identifier, display_name, service_name, and style
+- Inserts into chats table using chat ROWID as id (preserves FK references for messages)
+- Maps style field to is_group boolean: style=43 is group chat, style=45 is 1:1 chat
+- Idempotent via chat_identifier UNIQUE constraint with ON CONFLICT DO UPDATE
+- Handles nullable display_name and service_name fields properly
+**Files changed:**
+- internal/etl/chats.go (new)
+- internal/etl/chats_test.go (new)
+**Learnings:**
+- Chat ROWID → chats.id mapping is critical for FK consistency with messages table
+- Style values 43 (group) and 45 (1:1) are the primary indicators of chat type in iMessage
+- chat_identifier already has UNIQUE constraint in schema, so ON CONFLICT DO UPDATE works cleanly
+- Nullable fields need sql.NullString handling when reading, but can store empty strings on write
+- Test pattern consistent with handles_test.go: synthetic fixture creation + comprehensive edge case coverage
+
+---
+

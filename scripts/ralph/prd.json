@@ -39,7 +39,7 @@
         "Unit tests with synthetic chat.db fixture"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "files": ["internal/etl/chats.go", "internal/etl/chats_test.go"],
       "notes": "Chat ROWID from chat.db maps to chats.id in eve.db."
     },
