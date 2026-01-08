@@ -146,7 +146,7 @@
         "Persists into conversation_analyses idempotently"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "files": [
         "internal/engine/*",
         "internal/encoding/*",

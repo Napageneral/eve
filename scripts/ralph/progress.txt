@@ -232,3 +232,36 @@ Started: 2026-01-08
 - Writer uses time-based (1s) and size-based (100 ops) flush triggers
 - Batched writes in single transaction ensure atomicity
 - All acceptance criteria met: drains queue in tests, writer batches operations, ready for idempotency keys
+
+### EVGO-008 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented end-to-end conversation analysis pipeline with Gemini Flash 3.0
+- Added warehouse database schema migration (002_core_schema.sql) with full ETL tables
+- Ported conversation encoding logic from TypeScript to Go with feature parity
+- Created database reader for fetching conversations with messages/attachments/reactions
+- Implemented analysis job handler that encodes conversations and calls Gemini API
+- Persists analysis results to conversation_analyses and completions tables with idempotency
+
+**Files changed:**
+- `internal/migrate/sql/warehouse/002_core_schema.sql` — Core warehouse schema (conversations, messages, chats, contacts, analyses, completions)
+- `internal/encoding/encoding.go` + tests — Conversation encoding with sender names, timestamps, attachments, reactions
+- `internal/db/reader.go` + tests — Raw SQL reader for conversations with all related data
+- `internal/engine/analysis_job.go` + tests — Analysis job handler with Gemini integration
+- `internal/gemini/client.go` — Exported HttpClient field for test mocking
+
+**Learnings:**
+- Conversation encoding ported from TypeScript maintains same structure: sender names, timestamps, attachments as [Image]/[Attachment: filename], reactions as emoji counts
+- Raw SQL queries are explicit and performant: LEFT JOINs for optional relations, COALESCE for nullable names
+- Job handler signature is `func(context.Context, *queue.Job) error` - wrapped NewAnalysisJobHandler to return closure
+- SQLite timestamp parsing requires trying multiple formats (RFC3339, SQL datetime, ISO8601)
+- Test schemas must match production schema column names exactly (nickname, is_from_me on reactions)
+- HttpClient needed to be exported (capitalized) to allow test transport injection for fake server
+- Gemini client signature: GenerateContent(model string, req *GenerateContentRequest) returns *GenerateContentResponse
+- Response structure: candidates[0].content.parts[0].text contains analysis text
+- Idempotent persistence via UPSERT: INSERT ... ON CONFLICT DO UPDATE handles retries gracefully
+- Test helper pattern: httptest.Server with custom http.RoundTripper to redirect all requests
+- All EVGO-008 tests pass; one pre-existing engine test (TestEngine_Run_UnknownJobType) has timing issue where job retries within test window
+- Encoding tests verify deterministic output (sorted reactions), message ordering by timestamp, optional date headers
+- Reader tests confirm attachments and reactions are fetched with proper SQL NULL handling
+
