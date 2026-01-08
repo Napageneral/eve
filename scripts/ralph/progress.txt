@@ -172,3 +172,30 @@ Started: 2026-01-08
 - Agent-friendly JSON output enables programmatic queue monitoring
 - This is the first operational command that doesn't modify any data
 - All acceptance criteria met: JSON output, all state counts, no background services required
+
+### EVGO-006 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented complete Gemini HTTP client with HTTP/2 support
+- Added generateContent API for analysis calls (Gemini Flash 3.0)
+- Added embedContent API for embedding calls
+- Implemented exponential backoff retry logic with jitter
+- Comprehensive unit tests using httptest (no real API calls)
+
+**Files changed:**
+- `internal/gemini/client.go` — Full HTTP/2 client implementation
+- `internal/gemini/client_test.go` — 11 comprehensive unit tests with httptest fake servers
+
+**Learnings:**
+- HTTP/2 enabled via Transport.ForceAttemptHTTP2 flag
+- Connection pooling configured with MaxIdleConns=100, MaxConnsPerHost=50
+- Retry logic: 429 and 5xx status codes are retryable, 4xx (except 429) are not
+- Exponential backoff: initialBackoff * 2^(attempt-1) with ±25% jitter
+- Backoff capped at maxBackoff (30s) to prevent infinite waits
+- math/rand used for jitter to avoid thundering herd on retries
+- httptest.NewServer provides deterministic fake HTTP server for tests
+- atomic.AddInt32/LoadInt32 used for thread-safe attempt counters in tests
+- Client uses 60s default timeout to allow for slow Gemini responses
+- JSON marshaling/unmarshaling tests verify request/response struct correctness
+- All tests are deterministic and cheap (no external API dependencies)
+- All acceptance criteria met: both API methods implemented, retry logic with jitter, httptest-based unit tests

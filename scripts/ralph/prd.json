@@ -112,7 +112,7 @@
         "Unit tests verify retry behavior using httptest"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "files": [
         "internal/gemini/*"
       ],
