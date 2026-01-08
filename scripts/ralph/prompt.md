@@ -2,57 +2,48 @@
 
 ## Context
 
-You are working in the **Eve** repository at `/Users/tyler/Desktop/projects/eve/`.
+You are completing the **Go ETL migration** for Eve at `/Users/tyler/Desktop/projects/eve/`.
 
-We are executing a major pivot:
-- Move Eve away from Python/Celery/gevent into a **single Go binary**.
-- **Cloud is allowed**: it is OK to send message content to Gemini for **analysis + embeddings**.
-- **No local models / no sidecars** for now.
-- **Port ETL away from Python** (distribution simplicity).
+**Goal**: Make `eve sync` actually copy data from chat.db to eve.db so the Go binary is fully self-sufficient. After this phase, all Python code will be deleted.
 
-**Primary design docs (read first):**
-- `docs/ralph/GO_SINGLE_BINARY_PLAN.md`
-- `docs/ralph/EXECUTION_CHECKLIST.md`
+**Key existing code:**
+- `internal/etl/chatdb.go` — chat.db reader with performance pragmas (already works)
+- `internal/etl/watermark.go` — watermark tracking (already works)
+- `internal/migrate/sql/warehouse/002_core_schema.sql` — target schema (already exists)
 
-**Ralph task list + memory:**
-- `scripts/ralph/prd.json`
-- `scripts/ralph/progress.txt`
+## Absolute Rules
 
-## Absolute rules
-
-- **ONE story per iteration** (pick the highest priority story where `passes: false`)
-- **Raw SQL only** (no ORM query layers)
-- **Default CLI stdout is JSON** and should not print message text unless explicitly requested
-- **Do not call real Gemini APIs in unit tests**:
-  - use `httptest`/fake servers for Go tests
-  - tests must be deterministic and cheap
+- **ONE story per iteration**
+- **Raw SQL only** (no ORMs)
+- **JSON stdout** — never print message text unless explicitly requested
+- **Idempotent writes** — use ON CONFLICT clauses
+- **Synthetic test fixtures** — create temp chat.db with known data; do NOT use real user data in tests
 
 ## Your Task (repeat every iteration)
 
 1. Read `scripts/ralph/prd.json`
 2. Read `scripts/ralph/progress.txt` (check **Codebase Patterns** first)
-3. Check you’re on the correct branch (see `branchName` in prd.json)
-4. Pick the highest priority story where `passes: false`
-5. Implement that ONE story only
-6. Run verification harness:
+3. Pick the highest priority story where `passes: false`
+4. Implement that ONE story only
+5. Run verification:
 
 ```bash
 ./scripts/ralph/verify.sh
 ```
 
-7. If verification passes:
+6. If verification passes:
    - Commit: `feat(eve-go): [ID] - [Title]`
-   - Update `scripts/ralph/prd.json`: set `passes: true` for that story
+   - Update `scripts/ralph/prd.json`: set `passes: true`
    - Append learnings to `scripts/ralph/progress.txt`
-8. If verification fails:
-   - Append the failure details to `scripts/ralph/progress.txt` under the story ID
+
+7. If verification fails:
+   - Append failure details to `scripts/ralph/progress.txt`
    - Do NOT mark the story as passing
 
-## Stop condition
+## Stop Condition
 
-If **ALL** stories in `scripts/ralph/prd.json` have `passes: true`, reply:
+If **ALL** stories have `passes: true`, reply:
 
 <promise>COMPLETE</promise>
 
 Otherwise end normally (the loop will restart).
-

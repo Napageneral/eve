@@ -15,6 +15,7 @@ import (
 	"github.com/tylerchilds/eve/internal/config"
 	"github.com/tylerchilds/eve/internal/engine"
 	"github.com/tylerchilds/eve/internal/etl"
+	"github.com/tylerchilds/eve/internal/gemini"
 	"github.com/tylerchilds/eve/internal/migrate"
 	"github.com/tylerchilds/eve/internal/queue"
 )
@@ -235,6 +236,16 @@ func main() {
 			// Create queue
 			q := queue.New(queueDB)
 
+			// Open warehouse database for handlers
+			warehouseDB, err := sql.Open("sqlite3", cfg.EveDBPath+"?_journal_mode=WAL&_busy_timeout=5000")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open warehouse database: %w", err))
+			}
+			defer warehouseDB.Close()
+
+			// Create Gemini client
+			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
+
 			// Create engine with config
 			engineCfg := engine.DefaultConfig()
 			if runWorkerCount > 0 {
@@ -243,8 +254,10 @@ func main() {
 
 			eng := engine.New(q, engineCfg)
 
-			// Register fake job handler for testing
+			// Register job handlers
 			eng.RegisterHandler("fake", engine.FakeJobHandler)
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient))
+			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
 
 			// Setup context with cancellation
 			var ctx context.Context

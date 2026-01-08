@@ -1,41 +1,53 @@
 # Ralph Progress Log for Eve
 Started: 2026-01-08
+Phase: go-etl-complete
 
 ## Codebase Patterns (keep updated)
 
 ### Output + privacy defaults
 - **Stdout contract**: JSON-only by default for all CLI commands.
-- **No message text by default**: message bodies should not appear in stdout/logs unless explicitly requested (e.g., `--include-text`).
-- **JSONL when streaming**: prefer `--jsonl` (one JSON object per line) for progress streams.
+- **No message text by default**: message bodies should not appear in stdout/logs unless explicitly requested.
 
 ### Data + queries
 - **Raw SQL only**: do not introduce ORMs for queries. Use `database/sql` with explicit SQL.
-- **Idempotency**: every persisted artifact must have a unique idempotency key and use upserts.
-- **Separate DBs**: prefer `eve.db` (warehouse) and `eve-queue.db` (durable queue) to avoid lock contention.
+- **Idempotency**: every persisted artifact must have a unique idempotency key and use upserts (ON CONFLICT DO UPDATE/IGNORE).
+- **Separate DBs**: eve.db (warehouse) and eve-queue.db (durable queue).
 
 ### Testing
-- **Ralph harness**: `make ralph-verify`
+- **Ralph harness**: `./scripts/ralph/verify.sh`
 - **NO real Gemini calls in unit tests**: use `httptest` fake servers.
-- **NO real-data ETL in the loop**: keep tests deterministic and cheap.
+- **Synthetic fixtures for ETL tests**: create temp chat.db with known data, verify eve.db output.
 
-### Go rewrite conventions
-- **Single binary**: no Python runtime required for the happy path.
-- **No gRPC client stacks**: Gemini calls via HTTP/2 REST only.
-- **Config precedence**: env vars override config file; config file overrides defaults.
+### Go conventions
+- **Single binary**: no Python runtime required.
+- **Apple timestamps**: nanoseconds since 2001-01-01 (add 978307200 to convert to Unix).
+- **Config precedence**: env vars > config file > defaults.
 
-## Key Files / Directories
+## Key Files
 
-- `docs/ralph/GO_SINGLE_BINARY_PLAN.md` — full design
-- `docs/ralph/EXECUTION_CHECKLIST.md` — ordered implementation steps
-- `scripts/ralph/prd.json` — task list for Ralph
-- `scripts/ralph/prompt.md` — loop instructions
-- `Makefile` — includes `ralph-verify`
+- `internal/etl/chatdb.go` — chat.db reader (already implemented)
+- `internal/etl/watermark.go` — watermark tracking (already implemented)
+- `internal/migrate/sql/warehouse/002_core_schema.sql` — target schema
+- `cmd/eve/main.go` — CLI entry point
+
+## Previous Phase Summary (EVGO-001 to EVGO-010)
+
+All 10 stories passed:
+- Go module + CLI skeleton
+- Config loading with env overrides
+- Embedded SQL migrations
+- Durable queue (enqueue/lease/ack/fail)
+- Gemini HTTP client with retries
+- Compute engine with worker pools
+- Analysis job handler
+- Embeddings pipeline with batching
+- ETL bootstrap (message count + watermark only)
+
+**Gap**: `eve sync` currently only counts messages and updates watermark. It does NOT copy data.
 
 ---
 
 ## Story Progress (append after each story)
-
-(Append learnings after each story in this format)
 
 ### [STORY-ID] (YYYY-MM-DD)
 **Status:** ✅ PASSED | ❌ FAILED
@@ -47,288 +59,3 @@ Started: 2026-01-08
 - ...
 
 ---
-
-### EVGO-001 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Created Go module with Cobra CLI framework
-- Implemented minimal eve binary with version and paths commands
-- Both commands output stable JSON as required
-- App directory resolution works across macOS/Linux/Windows
-
-**Files changed:**
-- `go.mod` + `go.sum` — Go module with cobra dependency
-- `cmd/eve/main.go` — CLI entry point with version and paths commands
-- `internal/config/config.go` — Config loading with app dir resolution and env var support
-
-**Learnings:**
-- Cobra provides clean CLI structure with automatic help generation
-- Config package already implements env var overrides (GEMINI_API_KEY, EVE_GEMINI_ANALYSIS_MODEL, EVE_GEMINI_EMBED_MODEL) which satisfies EVGO-002 acceptance criteria
-- JSON encoder with SetIndent provides clean, readable output
-- App directory resolution follows platform conventions (Library/Application Support on macOS)
-- Verification harness runs successfully with go.mod present
-
----
-
-### EVGO-002 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Verified that EVGO-001 implementation already satisfies EVGO-002 requirements
-- Config loading with env var precedence is fully functional
-- All three required env vars are supported with appropriate defaults
-
-**Files changed:**
-- No new changes; `internal/config/config.go` from EVGO-001 already implements all requirements
-
-**Learnings:**
-- Config.Load() reads GEMINI_API_KEY with empty string default (line 51)
-- EVE_GEMINI_ANALYSIS_MODEL defaults to "gemini-3.0-flash" (line 52)
-- EVE_GEMINI_EMBED_MODEL defaults to "text-embedding-005" (line 53)
-- ConfigPath correctly resolves to app_dir/config.json (line 50)
-- getEnv helper provides clean env override pattern
-- EVGO-001 and EVGO-002 were implemented together efficiently
-
-
-### EVGO-003 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Created migration runner package using go:embed for SQL files
-- Implemented queue DB schema (jobs + runs tables with proper indexes)
-- Implemented warehouse DB watermark table for ETL tracking
-- Added `eve init` command that creates/migrates both databases
-- Migration tracking via schema_migrations table ensures idempotency
-
-**Files changed:**
-- `internal/migrate/migrate.go` — migration runner with embedded SQL support
-- `internal/migrate/migrate_test.go` — comprehensive unit tests for migrations
-- `internal/migrate/sql/queue/001_init.sql` — queue DB schema (jobs + runs)
-- `internal/migrate/sql/warehouse/001_watermarks.sql` — watermark tracking table
-- `cmd/eve/main.go` — added init command with JSON output
-- `go.mod` + `go.sum` — added sqlite3 driver dependency
-
-**Learnings:**
-- go:embed requires files to be in the same package or subdirectories (cannot use ../)
-- Moved migrations from assets/ to internal/migrate/sql/ to work with embed
-- Migration runner uses transaction per migration for atomicity
-- schema_migrations table tracks applied migrations by filename + timestamp
-- SQLite PRAGMA foreign_keys must be enabled explicitly
-- Idempotency achieved by checking schema_migrations before running each migration
-- Jobs table uses CHECK constraint for state validation (pending|leased|succeeded|failed|dead)
-- Partial indexes (WHERE clause) optimize queue operations for leased/pending jobs
-- Separate eve-queue.db prevents lock contention between queue and warehouse writes
-- All acceptance criteria met: embedded SQL, idempotent init, queue schema with jobs table
-
-### EVGO-004 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Implemented complete durable queue system with all core primitives
-- Enqueue: idempotent job insertion via unique key constraint
-- Lease: atomic batch leasing with lease_owner and lease_expires_ts
-- RequeueExpired: moves expired leases back to pending state
-- Ack: marks jobs as succeeded
-- Fail: handles retry with exponential backoff or moves to dead state after max attempts
-- 17 comprehensive unit tests covering all operations and edge cases
-
-**Files changed:**
-- `internal/queue/queue.go` — complete queue implementation with all primitives
-- `internal/queue/queue_test.go` — 17 deterministic unit tests using temp SQLite files
-- `go.mod` + `go.sum` — added github.com/google/uuid dependency
-
-**Learnings:**
-- Idempotent enqueue uses `INSERT ... ON CONFLICT(key) DO NOTHING` to skip duplicates
-- Lease operation requires transaction to atomically query + update job state
-- Building dynamic IN clauses in Go requires careful placeholder management
-- RequeueExpired is scheduler's responsibility to call periodically
-- Exponential backoff: 2^attempts seconds (1s, 2s, 4s, 8s, etc.)
-- Job failure checks attempts vs max_attempts to decide between pending and dead state
-- sql.NullString and sql.NullInt64 handle optional lease_owner/lease_expires_ts fields
-- Unit tests use os.CreateTemp for deterministic temporary SQLite databases
-- All tests pass without any external services (no Gemini, no real data)
-- Queue design supports high-concurrency leasing by multiple workers
-- Lease TTL ensures jobs don't get stuck if worker crashes
-- All acceptance criteria met: idempotent enqueue, lease with TTL, requeue expired, comprehensive tests
-
-### EVGO-005 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Added GetStats() method to queue package for operational visibility
-- Implemented 'eve compute status' CLI command that outputs JSON
-- Returns counts for all job states (pending/leased/succeeded/failed/dead)
-- Includes oldest pending job timestamp for backlog age monitoring
-- Added comprehensive unit tests for GetStats (empty queue + mixed states)
-
-**Files changed:**
-- `internal/queue/queue.go` — added Stats struct and GetStats() method
-- `internal/queue/queue_test.go` — added TestGetStats_Empty and TestGetStats_WithJobs
-- `cmd/eve/main.go` — added compute command group with status subcommand
-
-**Learnings:**
-- GROUP BY aggregation in SQLite efficiently counts jobs by state
-- sql.NullInt64 correctly handles optional oldest_ts when queue is empty
-- JSON struct tags with omitempty prevent zero values from cluttering output
-- Compute command follows Cobra subcommand pattern (compute -> status)
-- Stats query is read-only and works without any background services
-- omitempty on oldest_pending_ts ensures clean JSON when no pending jobs
-- Agent-friendly JSON output enables programmatic queue monitoring
-- This is the first operational command that doesn't modify any data
-- All acceptance criteria met: JSON output, all state counts, no background services required
-
-### EVGO-006 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Implemented complete Gemini HTTP client with HTTP/2 support
-- Added generateContent API for analysis calls (Gemini Flash 3.0)
-- Added embedContent API for embedding calls
-- Implemented exponential backoff retry logic with jitter
-- Comprehensive unit tests using httptest (no real API calls)
-
-**Files changed:**
-- `internal/gemini/client.go` — Full HTTP/2 client implementation
-- `internal/gemini/client_test.go` — 11 comprehensive unit tests with httptest fake servers
-
-**Learnings:**
-- HTTP/2 enabled via Transport.ForceAttemptHTTP2 flag
-- Connection pooling configured with MaxIdleConns=100, MaxConnsPerHost=50
-- Retry logic: 429 and 5xx status codes are retryable, 4xx (except 429) are not
-- Exponential backoff: initialBackoff * 2^(attempt-1) with ±25% jitter
-- Backoff capped at maxBackoff (30s) to prevent infinite waits
-- math/rand used for jitter to avoid thundering herd on retries
-- httptest.NewServer provides deterministic fake HTTP server for tests
-- atomic.AddInt32/LoadInt32 used for thread-safe attempt counters in tests
-- Client uses 60s default timeout to allow for slow Gemini responses
-- JSON marshaling/unmarshaling tests verify request/response struct correctness
-- All tests are deterministic and cheap (no external API dependencies)
-- All acceptance criteria met: both API methods implemented, retry logic with jitter, httptest-based unit tests
-
-### EVGO-007 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Implemented complete compute engine with scheduler, worker pools, and database writer
-- Scheduler leases jobs in batches and distributes them to worker pool
-- Workers process jobs concurrently and handle success/failure cases
-- Periodic requeue of expired leases to handle crashed workers
-- Database writer batches operations for efficient bulk inserts
-- Added `eve compute run` command with timeout and signal handling
-- Registered fake job handler for testing the engine end-to-end
-
-**Files changed:**
-- `internal/engine/engine.go` — Full compute engine implementation (scheduler + workers)
-- `internal/engine/engine_test.go` — 5 comprehensive tests covering empty queue, success, failure, unknown types, and idempotency
-- `internal/db/writer.go` — Batched database writer with timer-based and size-based flushing
-- `internal/db/writer_test.go` — 7 tests covering batch flush, timer flush, transactions, and idempotency
-- `cmd/eve/main.go` — Added `eve compute run` command with worker count and timeout flags
-- `internal/queue/queue.go` — Added retry with backoff for Ack/Fail operations to handle SQLite lock contention
-
-**Learnings:**
-- SQLite requires WAL mode and busy_timeout for concurrent access from multiple workers
-- Connection pool settings (MaxOpenConns, MaxIdleConns) are critical for multi-worker scenarios
-- Database lock errors are transient and should be retried with exponential backoff
-- Retry logic added to Ack() and Fail() operations: 5 attempts with 10ms, 20ms, 40ms, 80ms, 160ms backoff
-- Worker pool pattern: scheduler leases jobs → sends to channel → workers consume from channel
-- Context-based cancellation enables graceful shutdown on signals (SIGINT/SIGTERM)
-- Requeue goroutine runs independently to recover expired leases from crashed workers
-- FakeJobHandler allows testing the entire engine without real job implementations
-- All tests pass deterministically using temp SQLite files with WAL mode
-- Writer uses time-based (1s) and size-based (100 ops) flush triggers
-- Batched writes in single transaction ensure atomicity
-- All acceptance criteria met: drains queue in tests, writer batches operations, ready for idempotency keys
-
-### EVGO-008 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Implemented end-to-end conversation analysis pipeline with Gemini Flash 3.0
-- Added warehouse database schema migration (002_core_schema.sql) with full ETL tables
-- Ported conversation encoding logic from TypeScript to Go with feature parity
-- Created database reader for fetching conversations with messages/attachments/reactions
-- Implemented analysis job handler that encodes conversations and calls Gemini API
-- Persists analysis results to conversation_analyses and completions tables with idempotency
-
-**Files changed:**
-- `internal/migrate/sql/warehouse/002_core_schema.sql` — Core warehouse schema (conversations, messages, chats, contacts, analyses, completions)
-- `internal/encoding/encoding.go` + tests — Conversation encoding with sender names, timestamps, attachments, reactions
-- `internal/db/reader.go` + tests — Raw SQL reader for conversations with all related data
-- `internal/engine/analysis_job.go` + tests — Analysis job handler with Gemini integration
-- `internal/gemini/client.go` — Exported HttpClient field for test mocking
-
-**Learnings:**
-- Conversation encoding ported from TypeScript maintains same structure: sender names, timestamps, attachments as [Image]/[Attachment: filename], reactions as emoji counts
-- Raw SQL queries are explicit and performant: LEFT JOINs for optional relations, COALESCE for nullable names
-- Job handler signature is `func(context.Context, *queue.Job) error` - wrapped NewAnalysisJobHandler to return closure
-- SQLite timestamp parsing requires trying multiple formats (RFC3339, SQL datetime, ISO8601)
-- Test schemas must match production schema column names exactly (nickname, is_from_me on reactions)
-- HttpClient needed to be exported (capitalized) to allow test transport injection for fake server
-- Gemini client signature: GenerateContent(model string, req *GenerateContentRequest) returns *GenerateContentResponse
-- Response structure: candidates[0].content.parts[0].text contains analysis text
-- Idempotent persistence via UPSERT: INSERT ... ON CONFLICT DO UPDATE handles retries gracefully
-- Test helper pattern: httptest.Server with custom http.RoundTripper to redirect all requests
-- All EVGO-008 tests pass; one pre-existing engine test (TestEngine_Run_UnknownJobType) has timing issue where job retries within test window
-- Encoding tests verify deterministic output (sorted reactions), message ordering by timestamp, optional date headers
-- Reader tests confirm attachments and reactions are fetched with proper SQL NULL handling
-
-
-### EVGO-009 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Implemented complete embeddings pipeline with batching for high-throughput embedding generation
-- Added batch embeddings API support in Gemini client (BatchEmbedContents)
-- Created embeddings batcher with configurable size/time-based flush (default: 100 items or 1 second)
-- Implemented embedding job handler that reads entities (conversation/message/chat), encodes, and persists
-- Added embeddings table migration (003_embeddings.sql) with entity_type/entity_id/model unique constraint
-- Binary blob storage for embedding vectors (float64 -> little-endian bytes)
-- Fixed reactions table schema to include is_from_me column (required by reader)
-
-**Files changed:**
-- `internal/embeddings/batcher.go` — Batching engine with concurrent processing, timer-based and size-based flushing
-- `internal/embeddings/batcher_test.go` — Comprehensive tests for size-based flush, time-based flush, empty batch handling
-- `internal/engine/embeddings_job.go` — Job handler for conversation/message/chat embeddings with Gemini API calls
-- `internal/engine/embeddings_job_test.go` — End-to-end tests with fake Gemini server, idempotency validation, blob encoding/decoding
-- `internal/gemini/client.go` — Added BatchEmbedContents method with retry logic and exponential backoff
-- `internal/gemini/client_test.go` — Tests for batch API success and retry behavior, testRoundTripper helper
-- `internal/migrate/sql/warehouse/003_embeddings.sql` — Embeddings table with BLOB storage, entity type/ID indexing
-- `internal/migrate/sql/warehouse/002_core_schema.sql` — Added is_from_me column to reactions table
-
-**Learnings:**
-- Batch embeddings API pattern: batchEmbedContents endpoint takes array of EmbedContentRequest
-- Batcher design: independent goroutines for timer loop and batch processing, context-based cancellation
-- Results channel pattern allows streaming results back to consumers as batches complete
-- Float64 blob encoding: binary.LittleEndian for cross-platform consistency, 8 bytes per float64
-- Idempotent persistence via ON CONFLICT DO UPDATE ensures safe retries without duplicates
-- Entity-based embedding design supports multiple entity types (conversation, message, chat) with single handler
-- Batcher flush strategies: maxBatchSize=100 for throughput, flushInterval=1s for latency
-- Tests use httptest.NewServer with custom RoundTripper to redirect Gemini API calls to fake server
-- Migration order matters: embeddings migration (003) depends on core schema (002)
-- All tests deterministic and fast (no real Gemini API calls, no network dependencies)
-- Schema evolution: reactions table needed is_from_me column added retrospectively for reader compatibility
-
-### EVGO-010 (2026-01-08)
-**Status:** ✅ PASSED
-**What changed:**
-- Created internal/etl package for ETL operations (chat.db reading and watermark management)
-- Implemented chat.db reader with read-only optimized pragmas (query_only, synchronous=OFF, mmap, large cache)
-- Implemented watermark tracking system for incremental sync (get/set operations with int and text values)
-- Added `eve sync --dry-run` command that outputs JSON counts (no message text printed)
-- Supports incremental sync via watermark-based ROWID filtering
-
-**Files changed:**
-- `internal/etl/chatdb.go` — Chat.db reader with performance pragmas and Apple timestamp conversion
-- `internal/etl/chatdb_test.go` — 8 comprehensive tests for chat.db reading (empty, with data, since_rowid, counts)
-- `internal/etl/watermark.go` — Watermark get/set with upsert pattern (ON CONFLICT DO UPDATE)
-- `internal/etl/watermark_test.go` — 7 tests covering watermark CRUD, multiple entries, SQL injection safety
-- `cmd/eve/main.go` — Added sync command with --dry-run flag
-
-**Learnings:**
-- Chat.db path resolution: env override (EVE_SOURCE_CHAT_DB or CHATSTATS_SOURCE_CHAT_DB) takes precedence over default ~/Library/Messages/chat.db
-- Apple timestamps are nanoseconds since 2001-01-01 00:00:00 UTC (not Unix epoch)
-- Read-only pragmas significantly improve performance: query_only=ON, synchronous=OFF, journal_mode=OFF, temp_store=MEMORY
-- Large cache and mmap settings: cache_size=-262144 (256MB), mmap_size=268435456 (256MB)
-- Watermark table design: (source, name) as composite primary key, supports both int and text values via nullable columns
-- ON CONFLICT DO UPDATE provides idempotent upsert pattern for watermarks
-- Incremental sync uses ROWID watermark: WHERE ROWID > ? in message count query
-- JSON output includes only counts and timestamps, never message text (privacy by default)
-- sql.NullInt64 and sql.NullString handle optional database values correctly
-- Tests create temp databases with t.TempDir() for clean isolation
-- GetWatermark returns nil (not error) when watermark doesn't exist yet (first sync)
-- All 15 ETL tests pass deterministically with no external dependencies
-- Command supports both dry-run (no watermark update) and live mode (updates watermark)
-- Verification harness confirms all tests pass: go test ./internal/etl/... succeeds
-
