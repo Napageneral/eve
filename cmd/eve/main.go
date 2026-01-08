@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tylerchilds/eve/internal/config"
+	"github.com/tylerchilds/eve/internal/migrate"
 )
 
 var version = "0.1.0-dev"
@@ -44,8 +45,41 @@ func main() {
 		},
 	}
 
+	initCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize Eve databases",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			// Ensure app directory exists
+			if err := os.MkdirAll(cfg.AppDir, 0755); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to create app directory: %w", err))
+			}
+
+			// Run warehouse migrations
+			if err := migrate.MigrateWarehouse(cfg.EveDBPath); err != nil {
+				return printErrorJSON(fmt.Errorf("warehouse migration failed: %w", err))
+			}
+
+			// Run queue migrations
+			if err := migrate.MigrateQueue(cfg.QueueDBPath); err != nil {
+				return printErrorJSON(fmt.Errorf("queue migration failed: %w", err))
+			}
+
+			output := map[string]interface{}{
+				"ok":            true,
+				"app_dir":       cfg.AppDir,
+				"eve_db_path":   cfg.EveDBPath,
+				"queue_db_path": cfg.QueueDBPath,
+				"message":       "Databases initialized successfully",
+			}
+			return printJSON(output)
+		},
+	}
+
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
+	rootCmd.AddCommand(initCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -59,4 +93,17 @@ func printJSON(data interface{}) error {
 		return fmt.Errorf("failed to encode JSON: %w", err)
 	}
 	return nil
+}
+
+func printErrorJSON(err error) error {
+	output := map[string]interface{}{
+		"ok":    false,
+		"error": err.Error(),
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if encErr := encoder.Encode(output); encErr != nil {
+		return fmt.Errorf("failed to encode error JSON: %w", encErr)
+	}
+	return err
 }
