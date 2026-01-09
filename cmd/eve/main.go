@@ -306,7 +306,6 @@ func main() {
 
 			// Register job handlers
 			eng.RegisterHandler("fake", engine.FakeJobHandler)
-			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
 
 			// Setup context with cancellation
 			var ctx context.Context
@@ -329,14 +328,15 @@ func main() {
 				}()
 			}
 
-			// Serialize analysis DB writes into micro-batched txs to reduce SQLite write contention.
-			analysisWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
+			// Serialize DB writes into micro-batched txs to reduce SQLite write contention.
+			dbWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
 				BatchSize:     25,
 				FlushInterval: 100 * time.Millisecond,
 			})
-			analysisWriter.Start()
-			defer analysisWriter.Close()
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, nil, analysisWriter))
+			dbWriter.Start()
+			defer dbWriter.Close()
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, nil, dbWriter))
+			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.EmbedModel, dbWriter))
 
 			// Run engine
 			startTime := time.Now()
@@ -559,13 +559,13 @@ func main() {
 			metrics := engine.NewAnalysisMetrics()
 
 			eng := engine.New(q, engineCfg)
-			analysisWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
+			dbWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
 				BatchSize:     25,
 				FlushInterval: 100 * time.Millisecond,
 			})
-			analysisWriter.Start()
-			defer analysisWriter.Close()
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, metrics, analysisWriter))
+			dbWriter.Start()
+			defer dbWriter.Close()
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, metrics, dbWriter))
 
 			startTime := time.Now()
 			stats, err := eng.Run(context.Background())
@@ -950,70 +950,6 @@ func main() {
 
 			q := queue.New(queueDB)
 
-			// Enqueue conversation embeddings
-			enqueuedConversation := 0
-			for _, convID := range conversationIDs {
-				if err := q.Enqueue(queue.EnqueueOptions{
-					Type: "embedding",
-					Key:  fmt.Sprintf("embedding:conversation:%d:%s", convID, cfg.EmbedModel),
-					Payload: engine.EmbeddingJobPayload{
-						EntityType: "conversation",
-						EntityID:   convID,
-					},
-					MaxAttempts: 3,
-				}); err != nil {
-					return printErrorJSON(fmt.Errorf("failed to enqueue conversation embedding %d: %w", convID, err))
-				}
-				enqueuedConversation++
-			}
-
-			// Enqueue facet embeddings (these are the “analysis tags” you asked for)
-			enqueuedFacets := map[string]int{"entity": 0, "topic": 0, "emotion": 0, "humor_item": 0}
-			for _, id := range facet.Entities {
-				if err := q.Enqueue(queue.EnqueueOptions{
-					Type: "embedding",
-					Key:  fmt.Sprintf("embedding:entity:%d:%s", id, cfg.EmbedModel),
-					Payload: engine.EmbeddingJobPayload{EntityType: "entity", EntityID: id},
-					MaxAttempts: 3,
-				}); err != nil {
-					return printErrorJSON(fmt.Errorf("failed to enqueue entity embedding %d: %w", id, err))
-				}
-				enqueuedFacets["entity"]++
-			}
-			for _, id := range facet.Topics {
-				if err := q.Enqueue(queue.EnqueueOptions{
-					Type: "embedding",
-					Key:  fmt.Sprintf("embedding:topic:%d:%s", id, cfg.EmbedModel),
-					Payload: engine.EmbeddingJobPayload{EntityType: "topic", EntityID: id},
-					MaxAttempts: 3,
-				}); err != nil {
-					return printErrorJSON(fmt.Errorf("failed to enqueue topic embedding %d: %w", id, err))
-				}
-				enqueuedFacets["topic"]++
-			}
-			for _, id := range facet.Emotions {
-				if err := q.Enqueue(queue.EnqueueOptions{
-					Type: "embedding",
-					Key:  fmt.Sprintf("embedding:emotion:%d:%s", id, cfg.EmbedModel),
-					Payload: engine.EmbeddingJobPayload{EntityType: "emotion", EntityID: id},
-					MaxAttempts: 3,
-				}); err != nil {
-					return printErrorJSON(fmt.Errorf("failed to enqueue emotion embedding %d: %w", id, err))
-				}
-				enqueuedFacets["emotion"]++
-			}
-			for _, id := range facet.Humor {
-				if err := q.Enqueue(queue.EnqueueOptions{
-					Type: "embedding",
-					Key:  fmt.Sprintf("embedding:humor_item:%d:%s", id, cfg.EmbedModel),
-					Payload: engine.EmbeddingJobPayload{EntityType: "humor_item", EntityID: id},
-					MaxAttempts: 3,
-				}); err != nil {
-					return printErrorJSON(fmt.Errorf("failed to enqueue humor_item embedding %d: %w", id, err))
-				}
-				enqueuedFacets["humor_item"]++
-			}
-
 			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
 			engineCfg := engine.DefaultConfig()
 			if caseyEmbedWorkers > 0 {
@@ -1026,19 +962,124 @@ func main() {
 			warehouseDB.SetMaxOpenConns(maxOpen)
 			warehouseDB.SetMaxIdleConns(maxIdle)
 
-			eng := engine.New(q, engineCfg)
-			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
+			// Micro-batch embedding writes to reduce SQLite contention under high concurrency.
+			dbWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
+				BatchSize:     100,
+				FlushInterval: 50 * time.Millisecond,
+			})
+			dbWriter.Start()
+			defer dbWriter.Close()
 
-			startTime := time.Now()
-			stats, err := eng.Run(context.Background())
-			duration := time.Since(startTime)
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("compute run failed: %w", err))
+			runPhase := func(phase string, enqueueFn func() (map[string]int, error)) (map[string]interface{}, error) {
+				enqueuedByType, err := enqueueFn()
+				if err != nil {
+					return nil, err
+				}
+				enqueuedTotal := 0
+				for _, v := range enqueuedByType {
+					enqueuedTotal += v
+				}
+
+				eng := engine.New(q, engineCfg)
+				eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.EmbedModel, dbWriter))
+
+				startTime := time.Now()
+				stats, err := eng.Run(context.Background())
+				duration := time.Since(startTime)
+				if err != nil {
+					return nil, err
+				}
+
+				throughput := 0.0
+				if duration.Seconds() > 0 {
+					throughput = float64(stats.Succeeded) / duration.Seconds()
+				}
+
+				return map[string]interface{}{
+					"phase":                    phase,
+					"workers":                  engineCfg.WorkerCount,
+					"duration":                 duration.Seconds(),
+					"succeeded":                stats.Succeeded,
+					"failed":                   stats.Failed,
+					"skipped":                  stats.Skipped,
+					"throughput_embeddings_per_s": throughput,
+					"enqueued_total":           enqueuedTotal,
+					"enqueued_by_type":         enqueuedByType,
+				}, nil
 			}
 
-			throughput := 0.0
-			if duration.Seconds() > 0 {
-				throughput = float64(stats.Succeeded) / duration.Seconds()
+			runConversations, err := runPhase("conversation_embeddings", func() (map[string]int, error) {
+				enqueuedConversation := 0
+				for _, convID := range conversationIDs {
+					if err := q.Enqueue(queue.EnqueueOptions{
+						Type: "embedding",
+						Key:  fmt.Sprintf("embedding:conversation:%d:%s", convID, cfg.EmbedModel),
+						Payload: engine.EmbeddingJobPayload{
+							EntityType: "conversation",
+							EntityID:   convID,
+						},
+						MaxAttempts: 3,
+					}); err != nil {
+						return nil, fmt.Errorf("failed to enqueue conversation embedding %d: %w", convID, err)
+					}
+					enqueuedConversation++
+				}
+				return map[string]int{"conversation": enqueuedConversation}, nil
+			})
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("conversation embeddings phase failed: %w", err))
+			}
+
+			runFacets, err := runPhase("facet_embeddings", func() (map[string]int, error) {
+				enqueuedFacets := map[string]int{"entity": 0, "topic": 0, "emotion": 0, "humor_item": 0}
+				for _, id := range facet.Entities {
+					if err := q.Enqueue(queue.EnqueueOptions{
+						Type: "embedding",
+						Key:  fmt.Sprintf("embedding:entity:%d:%s", id, cfg.EmbedModel),
+						Payload: engine.EmbeddingJobPayload{EntityType: "entity", EntityID: id},
+						MaxAttempts: 3,
+					}); err != nil {
+						return nil, fmt.Errorf("failed to enqueue entity embedding %d: %w", id, err)
+					}
+					enqueuedFacets["entity"]++
+				}
+				for _, id := range facet.Topics {
+					if err := q.Enqueue(queue.EnqueueOptions{
+						Type: "embedding",
+						Key:  fmt.Sprintf("embedding:topic:%d:%s", id, cfg.EmbedModel),
+						Payload: engine.EmbeddingJobPayload{EntityType: "topic", EntityID: id},
+						MaxAttempts: 3,
+					}); err != nil {
+						return nil, fmt.Errorf("failed to enqueue topic embedding %d: %w", id, err)
+					}
+					enqueuedFacets["topic"]++
+				}
+				for _, id := range facet.Emotions {
+					if err := q.Enqueue(queue.EnqueueOptions{
+						Type: "embedding",
+						Key:  fmt.Sprintf("embedding:emotion:%d:%s", id, cfg.EmbedModel),
+						Payload: engine.EmbeddingJobPayload{EntityType: "emotion", EntityID: id},
+						MaxAttempts: 3,
+					}); err != nil {
+						return nil, fmt.Errorf("failed to enqueue emotion embedding %d: %w", id, err)
+					}
+					enqueuedFacets["emotion"]++
+				}
+				for _, id := range facet.Humor {
+					if err := q.Enqueue(queue.EnqueueOptions{
+						Type: "embedding",
+						Key:  fmt.Sprintf("embedding:humor_item:%d:%s", id, cfg.EmbedModel),
+						Payload: engine.EmbeddingJobPayload{EntityType: "humor_item", EntityID: id},
+						MaxAttempts: 3,
+					}); err != nil {
+						return nil, fmt.Errorf("failed to enqueue humor_item embedding %d: %w", id, err)
+					}
+					enqueuedFacets["humor_item"]++
+				}
+				return enqueuedFacets, nil
+			})
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("facet embeddings phase failed: %w", err))
 			}
 
 			// Counts of embeddings present after run (no vectors printed).
@@ -1078,21 +1119,8 @@ func main() {
 					"emotions": len(facet.Emotions),
 					"humor_items": len(facet.Humor),
 				},
-				"run": map[string]interface{}{
-					"workers": engineCfg.WorkerCount,
-					"duration": duration.Seconds(),
-					"succeeded": stats.Succeeded,
-					"failed": stats.Failed,
-					"skipped": stats.Skipped,
-					"throughput_embeddings_per_s": throughput,
-					"enqueued": map[string]int{
-						"conversation": enqueuedConversation,
-						"entity": enqueuedFacets["entity"],
-						"topic": enqueuedFacets["topic"],
-						"emotion": enqueuedFacets["emotion"],
-						"humor_item": enqueuedFacets["humor_item"],
-					},
-				},
+				"run_conversations": runConversations,
+				"run_facets": runFacets,
 				"embeddings_present": map[string]int{
 					"conversation": convEmbCount,
 					"entity": entityEmb,

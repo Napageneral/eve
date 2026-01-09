@@ -24,6 +24,12 @@ type EmbeddingJobPayload struct {
 
 // NewEmbeddingJobHandler creates a handler for embedding jobs
 func NewEmbeddingJobHandler(warehouseDB *sql.DB, geminiClient *gemini.Client, model string) func(context.Context, *queue.Job) error {
+	return NewEmbeddingJobHandlerWithPipeline(warehouseDB, geminiClient, model, nil)
+}
+
+// NewEmbeddingJobHandlerWithPipeline creates a handler for embedding jobs that can optionally
+// serialize DB writes through a micro-batched writer.
+func NewEmbeddingJobHandlerWithPipeline(warehouseDB *sql.DB, geminiClient *gemini.Client, model string, writer *TxBatchWriter) func(context.Context, *queue.Job) error {
 	return func(ctx context.Context, job *queue.Job) error {
 		// Parse payload
 		var payload EmbeddingJobPayload
@@ -62,20 +68,37 @@ func NewEmbeddingJobHandler(warehouseDB *sql.DB, geminiClient *gemini.Client, mo
 			return fmt.Errorf("failed to encode embedding: %w", err)
 		}
 
-		// Persist to embeddings table
-		_, err = warehouseDB.ExecContext(ctx, `
-			INSERT INTO embeddings (entity_type, entity_id, model, embedding_blob, dimension)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(entity_type, entity_id, model) DO UPDATE SET
-				embedding_blob = excluded.embedding_blob,
-				dimension = excluded.dimension,
-				created_at = CURRENT_TIMESTAMP
-		`, payload.EntityType, payload.EntityID, model, embeddingBlob, len(resp.Embedding.Values))
-
-		if err != nil {
-			return fmt.Errorf("failed to persist embedding: %w", err)
+		apply := func(tx *sql.Tx) error {
+			_, err := tx.Exec(`
+				INSERT INTO embeddings (entity_type, entity_id, model, embedding_blob, dimension)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(entity_type, entity_id, model) DO UPDATE SET
+					embedding_blob = excluded.embedding_blob,
+					dimension = excluded.dimension,
+					created_at = CURRENT_TIMESTAMP
+			`, payload.EntityType, payload.EntityID, model, embeddingBlob, len(resp.Embedding.Values))
+			if err != nil {
+				return fmt.Errorf("failed to persist embedding: %w", err)
+			}
+			return nil
 		}
 
+		if writer != nil {
+			return writer.Submit(ctx, apply)
+		}
+
+		// Fallback: direct write (autocommit)
+		tx, err := warehouseDB.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+		if err := apply(tx); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit embedding transaction: %w", err)
+		}
 		return nil
 	}
 }

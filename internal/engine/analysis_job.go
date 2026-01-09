@@ -675,7 +675,8 @@ func (h *AnalysisJobHandler) applyConvoAllV1Tx(tx *sql.Tx, conversationID int, c
 		return nil, nil
 	}
 
-	// Insert entities
+	// Multi-row inserts (chunked) for facets to reduce per-row statement overhead.
+	var entityRows [][]interface{}
 	for _, p := range parsed.Entities {
 		contactID, err := resolve(p.ParticipantName)
 		if err != nil {
@@ -686,16 +687,14 @@ func (h *AnalysisJobHandler) applyConvoAllV1Tx(tx *sql.Tx, conversationID int, c
 			if title == "" {
 				continue
 			}
-			if _, err := tx.Exec(
-				`INSERT OR IGNORE INTO entities (conversation_id, chat_id, contact_id, title) VALUES (?, ?, ?, ?)`,
-				conversationID, chatID, contactID, title,
-			); err != nil {
-				return fmt.Errorf("failed to insert entity: %w", err)
-			}
+			entityRows = append(entityRows, []interface{}{conversationID, chatID, contactID, title})
 		}
 	}
+	if err := execInsertOrIgnoreMany(tx, "entities", []string{"conversation_id", "chat_id", "contact_id", "title"}, entityRows); err != nil {
+		return fmt.Errorf("failed to insert entities: %w", err)
+	}
 
-	// Insert topics
+	var topicRows [][]interface{}
 	for _, p := range parsed.Topics {
 		contactID, err := resolve(p.ParticipantName)
 		if err != nil {
@@ -706,16 +705,14 @@ func (h *AnalysisJobHandler) applyConvoAllV1Tx(tx *sql.Tx, conversationID int, c
 			if title == "" {
 				continue
 			}
-			if _, err := tx.Exec(
-				`INSERT OR IGNORE INTO topics (conversation_id, chat_id, contact_id, title) VALUES (?, ?, ?, ?)`,
-				conversationID, chatID, contactID, title,
-			); err != nil {
-				return fmt.Errorf("failed to insert topic: %w", err)
-			}
+			topicRows = append(topicRows, []interface{}{conversationID, chatID, contactID, title})
 		}
 	}
+	if err := execInsertOrIgnoreMany(tx, "topics", []string{"conversation_id", "chat_id", "contact_id", "title"}, topicRows); err != nil {
+		return fmt.Errorf("failed to insert topics: %w", err)
+	}
 
-	// Insert emotions
+	var emotionRows [][]interface{}
 	for _, p := range parsed.Emotions {
 		contactID, err := resolve(p.ParticipantName)
 		if err != nil {
@@ -726,16 +723,14 @@ func (h *AnalysisJobHandler) applyConvoAllV1Tx(tx *sql.Tx, conversationID int, c
 			if typ == "" {
 				continue
 			}
-			if _, err := tx.Exec(
-				`INSERT OR IGNORE INTO emotions (conversation_id, chat_id, contact_id, emotion_type) VALUES (?, ?, ?, ?)`,
-				conversationID, chatID, contactID, typ,
-			); err != nil {
-				return fmt.Errorf("failed to insert emotion: %w", err)
-			}
+			emotionRows = append(emotionRows, []interface{}{conversationID, chatID, contactID, typ})
 		}
 	}
+	if err := execInsertOrIgnoreMany(tx, "emotions", []string{"conversation_id", "chat_id", "contact_id", "emotion_type"}, emotionRows); err != nil {
+		return fmt.Errorf("failed to insert emotions: %w", err)
+	}
 
-	// Insert humor items
+	var humorRows [][]interface{}
 	for _, p := range parsed.Humor {
 		contactID, err := resolve(p.ParticipantName)
 		if err != nil {
@@ -746,12 +741,76 @@ func (h *AnalysisJobHandler) applyConvoAllV1Tx(tx *sql.Tx, conversationID int, c
 			if snippet == "" {
 				continue
 			}
-			if _, err := tx.Exec(
-				`INSERT OR IGNORE INTO humor_items (conversation_id, chat_id, contact_id, snippet) VALUES (?, ?, ?, ?)`,
-				conversationID, chatID, contactID, snippet,
-			); err != nil {
-				return fmt.Errorf("failed to insert humor_item: %w", err)
+			humorRows = append(humorRows, []interface{}{conversationID, chatID, contactID, snippet})
+		}
+	}
+	if err := execInsertOrIgnoreMany(tx, "humor_items", []string{"conversation_id", "chat_id", "contact_id", "snippet"}, humorRows); err != nil {
+		return fmt.Errorf("failed to insert humor_items: %w", err)
+	}
+
+	return nil
+}
+
+func execInsertOrIgnoreMany(tx *sql.Tx, table string, columns []string, rows [][]interface{}) error {
+	if tx == nil {
+		return fmt.Errorf("nil tx")
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if len(columns) == 0 {
+		return fmt.Errorf("no columns")
+	}
+
+	// SQLite variable limit is typically 999; keep some headroom.
+	const maxVars = 900
+	ncols := len(columns)
+	maxRows := maxVars / ncols
+	if maxRows < 1 {
+		maxRows = 1
+	}
+
+	for start := 0; start < len(rows); start += maxRows {
+		end := start + maxRows
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunk := rows[start:end]
+
+		var b strings.Builder
+		b.Grow(128 + len(chunk)*ncols*3)
+		b.WriteString("INSERT OR IGNORE INTO ")
+		b.WriteString(table)
+		b.WriteString(" (")
+		for i, c := range columns {
+			if i > 0 {
+				b.WriteString(",")
 			}
+			b.WriteString(c)
+		}
+		b.WriteString(") VALUES ")
+
+		args := make([]interface{}, 0, len(chunk)*ncols)
+		for i, row := range chunk {
+			if len(row) != ncols {
+				return fmt.Errorf("row has %d values, want %d", len(row), ncols)
+			}
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString("(")
+			for j := 0; j < ncols; j++ {
+				if j > 0 {
+					b.WriteString(",")
+				}
+				b.WriteString("?")
+				args = append(args, row[j])
+			}
+			b.WriteString(")")
+		}
+
+		if _, err := tx.Exec(b.String(), args...); err != nil {
+			return err
 		}
 	}
 
