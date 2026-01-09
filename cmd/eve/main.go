@@ -23,6 +23,27 @@ import (
 
 var version = "0.1.0-dev"
 
+func recommendedSQLitePool(workerCount int) (maxOpen int, maxIdle int) {
+	// SQLite performs poorly with extremely high connection counts (each conn has its own page cache).
+	// We want enough parallelism for reads, but cap to avoid cache thrash and lock contention.
+	if workerCount <= 0 {
+		workerCount = 10
+	}
+	switch {
+	case workerCount < 64:
+		maxOpen = 64
+	case workerCount > 256:
+		maxOpen = 256
+	default:
+		maxOpen = workerCount
+	}
+	maxIdle = maxOpen / 2
+	if maxIdle < 16 {
+		maxIdle = 16
+	}
+	return maxOpen, maxIdle
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "eve",
@@ -276,11 +297,15 @@ func main() {
 				engineCfg.WorkerCount = runWorkerCount
 			}
 
+			// Cap warehouse DB pool to avoid lock/cache thrash at high worker counts.
+			maxOpen, maxIdle := recommendedSQLitePool(engineCfg.WorkerCount)
+			warehouseDB.SetMaxOpenConns(maxOpen)
+			warehouseDB.SetMaxIdleConns(maxIdle)
+
 			eng := engine.New(q, engineCfg)
 
 			// Register job handlers
 			eng.RegisterHandler("fake", engine.FakeJobHandler)
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient, cfg.AnalysisModel))
 			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
 
 			// Setup context with cancellation
@@ -303,6 +328,15 @@ func main() {
 					cancel()
 				}()
 			}
+
+			// Serialize analysis DB writes into micro-batched txs to reduce SQLite write contention.
+			analysisWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
+				BatchSize:     25,
+				FlushInterval: 100 * time.Millisecond,
+			})
+			analysisWriter.Start()
+			defer analysisWriter.Close()
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, nil, analysisWriter))
 
 			// Run engine
 			startTime := time.Now()
@@ -517,10 +551,21 @@ func main() {
 			}
 			engineCfg.LeaseOwner = fmt.Sprintf("casey-test-%d", time.Now().UnixNano())
 
+			// Cap warehouse DB pool to avoid lock/cache thrash at high worker counts.
+			maxOpen, maxIdle := recommendedSQLitePool(engineCfg.WorkerCount)
+			warehouseDB.SetMaxOpenConns(maxOpen)
+			warehouseDB.SetMaxIdleConns(maxIdle)
+
 			metrics := engine.NewAnalysisMetrics()
 
 			eng := engine.New(q, engineCfg)
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithMetrics(warehouseDB, geminiClient, cfg.AnalysisModel, metrics))
+			analysisWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
+				BatchSize:     25,
+				FlushInterval: 100 * time.Millisecond,
+			})
+			analysisWriter.Start()
+			defer analysisWriter.Close()
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, metrics, analysisWriter))
 
 			startTime := time.Now()
 			stats, err := eng.Run(context.Background())
@@ -975,6 +1020,11 @@ func main() {
 				engineCfg.WorkerCount = caseyEmbedWorkers
 			}
 			engineCfg.LeaseOwner = fmt.Sprintf("casey-embeddings-%d", time.Now().UnixNano())
+
+			// Cap warehouse DB pool to avoid lock/cache thrash at high worker counts.
+			maxOpen, maxIdle := recommendedSQLitePool(engineCfg.WorkerCount)
+			warehouseDB.SetMaxOpenConns(maxOpen)
+			warehouseDB.SetMaxIdleConns(maxIdle)
 
 			eng := engine.New(q, engineCfg)
 			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))

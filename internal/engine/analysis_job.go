@@ -29,6 +29,7 @@ type AnalysisJobHandler struct {
 	geminiClient *gemini.Client
 	model        string
 	metrics      *AnalysisMetrics
+	writer       *TxBatchWriter
 }
 
 // NewAnalysisJobHandler creates a new analysis job handler
@@ -38,11 +39,17 @@ func NewAnalysisJobHandler(warehouseDB *sql.DB, geminiClient *gemini.Client, mod
 
 // NewAnalysisJobHandlerWithMetrics creates a new analysis job handler that records aggregated metrics.
 func NewAnalysisJobHandlerWithMetrics(warehouseDB *sql.DB, geminiClient *gemini.Client, model string, metrics *AnalysisMetrics) JobHandler {
+	return NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, model, metrics, nil)
+}
+
+// NewAnalysisJobHandlerWithPipeline creates a new analysis job handler with an optional DB writer stage.
+func NewAnalysisJobHandlerWithPipeline(warehouseDB *sql.DB, geminiClient *gemini.Client, model string, metrics *AnalysisMetrics, writer *TxBatchWriter) JobHandler {
 	h := &AnalysisJobHandler{
 		warehouseDB:  warehouseDB,
 		geminiClient: geminiClient,
 		model:        model,
 		metrics:      metrics,
+		writer:       writer,
 	}
 	return func(ctx context.Context, job *queue.Job) error {
 		return h.handleJob(ctx, job.PayloadJSON)
@@ -155,7 +162,7 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 		if reason, msg, ok := inferBlockedReason(resp); ok {
 			blockedReason = reason
 			tw := time.Now()
-			if err := h.persistBlockedAnalysis(payload.ConversationID, conversation.ChatID, payload.EvePromptID, resp, reason, msg); err != nil {
+			if err := h.persistBlockedAnalysis(ctx, payload.ConversationID, conversation.ChatID, payload.EvePromptID, resp, reason, msg); err != nil {
 				return fmt.Errorf("failed to persist blocked analysis: %w", err)
 			}
 			dbWriteDur = time.Since(tw)
@@ -175,7 +182,7 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 			return fmt.Errorf("failed to parse convo-all-v1 JSON: %w", err)
 		}
 		tw := time.Now()
-		if err := h.persistConvoAllV1(payload.ConversationID, conversation.ChatID, payload.EvePromptID, parsed, resp); err != nil {
+		if err := h.persistConvoAllV1(ctx, payload.ConversationID, conversation.ChatID, payload.EvePromptID, parsed, resp); err != nil {
 			return fmt.Errorf("failed to persist analysis: %w", err)
 		}
 		dbWriteDur = time.Since(tw)
@@ -522,25 +529,99 @@ func extractJSONObject(text string) (string, error) {
 	return s[start : end+1], nil
 }
 
-func (h *AnalysisJobHandler) persistConvoAllV1(conversationID int, chatID int, evePromptID string, parsed *convoAllV1Output, resp *gemini.GenerateContentResponse) error {
+func (h *AnalysisJobHandler) persistConvoAllV1(ctx context.Context, conversationID int, chatID int, evePromptID string, parsed *convoAllV1Output, resp *gemini.GenerateContentResponse) error {
 	resultJSON, err := json.Marshal(resp)
 	if err != nil {
 		return fmt.Errorf("failed to marshal result: %w", err)
 	}
 
+	apply := func(tx *sql.Tx) error {
+		return h.applyConvoAllV1Tx(tx, conversationID, chatID, evePromptID, parsed, string(resultJSON))
+	}
+	if h.writer != nil {
+		return h.writer.Submit(ctx, apply)
+	}
 	tx, err := h.warehouseDB.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := apply(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
-	// Insert completion
+func (h *AnalysisJobHandler) persistBlockedAnalysis(ctx context.Context, conversationID int, chatID int, evePromptID string, resp *gemini.GenerateContentResponse, blockReason string, blockReasonMessage string) error {
+	resultJSON, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("failed to marshal result: %w", err)
+	}
+	apply := func(tx *sql.Tx) error {
+		return h.applyBlockedTx(tx, conversationID, evePromptID, string(resultJSON), blockReason, blockReasonMessage)
+	}
+	if h.writer != nil {
+		return h.writer.Submit(ctx, apply)
+	}
+	tx, err := h.warehouseDB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := apply(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (h *AnalysisJobHandler) applyBlockedTx(tx *sql.Tx, conversationID int, evePromptID string, resultJSON string, blockReason string, blockReasonMessage string) error {
+	// Insert completion (even though there's no output, we keep promptFeedback metadata)
 	var completionID int64
-	err = tx.QueryRow(`
+	err := tx.QueryRow(`
 		INSERT INTO completions (conversation_id, model, result, created_at)
 		VALUES (?, ?, ?, ?)
 		RETURNING id
-	`, conversationID, h.model, string(resultJSON), time.Now()).Scan(&completionID)
+	`, conversationID, h.model, resultJSON, time.Now()).Scan(&completionID)
+	if err != nil {
+		return fmt.Errorf("failed to insert completion: %w", err)
+	}
+
+	// Ensure idempotency for this prompt by replacing any existing row(s).
+	if _, err := tx.Exec(`DELETE FROM conversation_analyses WHERE conversation_id = ? AND eve_prompt_id = ?`, conversationID, evePromptID); err != nil {
+		return fmt.Errorf("failed to clear previous conversation_analyses row: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO conversation_analyses (
+			conversation_id, eve_prompt_id, status, completion_id,
+			blocked_reason, blocked_reason_message, blocked_at,
+			created_at, updated_at
+		) VALUES (?, ?, 'blocked', ?, ?, ?, ?, ?, ?)
+	`, conversationID, evePromptID, completionID,
+		blockReason, blockReasonMessage, time.Now(),
+		time.Now(), time.Now(),
+	); err != nil {
+		return fmt.Errorf("failed to insert blocked conversation_analyses: %w", err)
+	}
+
+	// Clear any prior facets so the DB doesn't look "analyzed".
+	for _, table := range []string{"entities", "topics", "emotions", "humor_items"} {
+		if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE conversation_id = ?", table), conversationID); err != nil {
+			return fmt.Errorf("failed to clear %s for conversation: %w", table, err)
+		}
+	}
+
+	return nil
+}
+
+func (h *AnalysisJobHandler) applyConvoAllV1Tx(tx *sql.Tx, conversationID int, chatID int, evePromptID string, parsed *convoAllV1Output, resultJSON string) error {
+	// Insert completion
+	var completionID int64
+	err := tx.QueryRow(`
+		INSERT INTO completions (conversation_id, model, result, created_at)
+		VALUES (?, ?, ?, ?)
+		RETURNING id
+	`, conversationID, h.model, resultJSON, time.Now()).Scan(&completionID)
 	if err != nil {
 		return fmt.Errorf("failed to insert completion: %w", err)
 	}
@@ -674,63 +755,6 @@ func (h *AnalysisJobHandler) persistConvoAllV1(conversationID int, chatID int, e
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-	return nil
-}
-
-func (h *AnalysisJobHandler) persistBlockedAnalysis(conversationID int, chatID int, evePromptID string, resp *gemini.GenerateContentResponse, blockReason string, blockReasonMessage string) error {
-	resultJSON, err := json.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	tx, err := h.warehouseDB.Begin()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Insert completion (even though there's no output, we keep promptFeedback metadata)
-	var completionID int64
-	err = tx.QueryRow(`
-		INSERT INTO completions (conversation_id, model, result, created_at)
-		VALUES (?, ?, ?, ?)
-		RETURNING id
-	`, conversationID, h.model, string(resultJSON), time.Now()).Scan(&completionID)
-	if err != nil {
-		return fmt.Errorf("failed to insert completion: %w", err)
-	}
-
-	// Ensure idempotency for this prompt by replacing any existing row(s).
-	if _, err := tx.Exec(`DELETE FROM conversation_analyses WHERE conversation_id = ? AND eve_prompt_id = ?`, conversationID, evePromptID); err != nil {
-		return fmt.Errorf("failed to clear previous conversation_analyses row: %w", err)
-	}
-
-	if _, err := tx.Exec(`
-		INSERT INTO conversation_analyses (
-			conversation_id, eve_prompt_id, status, completion_id,
-			blocked_reason, blocked_reason_message, blocked_at,
-			created_at, updated_at
-		) VALUES (?, ?, 'blocked', ?, ?, ?, ?, ?, ?)
-	`, conversationID, evePromptID, completionID,
-		blockReason, blockReasonMessage, time.Now(),
-		time.Now(), time.Now(),
-	); err != nil {
-		return fmt.Errorf("failed to insert blocked conversation_analyses: %w", err)
-	}
-
-	// Clear any prior facets so the DB doesn't look "analyzed".
-	for _, table := range []string{"entities", "topics", "emotions", "humor_items"} {
-		if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE conversation_id = ?", table), conversationID); err != nil {
-			return fmt.Errorf("failed to clear %s for conversation: %w", table, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
 	return nil
 }
 
