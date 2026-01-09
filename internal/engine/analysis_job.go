@@ -23,13 +23,15 @@ type AnalysisJobPayload struct {
 type AnalysisJobHandler struct {
 	warehouseDB  *sql.DB
 	geminiClient *gemini.Client
+	model        string
 }
 
 // NewAnalysisJobHandler creates a new analysis job handler
-func NewAnalysisJobHandler(warehouseDB *sql.DB, geminiClient *gemini.Client) JobHandler {
+func NewAnalysisJobHandler(warehouseDB *sql.DB, geminiClient *gemini.Client, model string) JobHandler {
 	h := &AnalysisJobHandler{
 		warehouseDB:  warehouseDB,
 		geminiClient: geminiClient,
+		model:        model,
 	}
 	return func(ctx context.Context, job *queue.Job) error {
 		return h.handleJob(ctx, job.PayloadJSON)
@@ -72,7 +74,7 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 	}
 
 	// Call Gemini for analysis
-	resp, err := h.geminiClient.GenerateContent("gemini-3.0-flash", req)
+	resp, err := h.geminiClient.GenerateContent(h.model, req)
 	if err != nil {
 		return fmt.Errorf("gemini analysis failed: %w", err)
 	}
@@ -131,7 +133,7 @@ func (h *AnalysisJobHandler) persistAnalysis(conversationID int, evePromptID str
 		INSERT INTO completions (conversation_id, model, result, created_at)
 		VALUES (?, ?, ?, ?)
 		RETURNING id
-	`, conversationID, "gemini-3.0-flash", string(resultJSON), time.Now()).Scan(&completionID)
+	`, conversationID, h.model, string(resultJSON), time.Now()).Scan(&completionID)
 	if err != nil {
 		return fmt.Errorf("failed to insert completion: %w", err)
 	}

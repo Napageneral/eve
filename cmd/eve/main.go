@@ -279,7 +279,7 @@ func main() {
 
 			// Register job handlers
 			eng.RegisterHandler("fake", engine.FakeJobHandler)
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient))
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient, cfg.AnalysisModel))
 			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
 
 			// Setup context with cancellation

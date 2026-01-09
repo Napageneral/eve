@@ -54,8 +54,12 @@ func Load() *Config {
 	configPath := filepath.Join(appDir, "config.json")
 
 	// Start with defaults
-	analysisModel := "gemini-3.0-flash"
-	embedModel := "text-embedding-005"
+	// NOTE: Model IDs must match Google Gemini API v1beta ListModels output.
+	// You can always override these with:
+	// - EVE_GEMINI_ANALYSIS_MODEL
+	// - EVE_GEMINI_EMBED_MODEL
+	analysisModel := "gemini-2.5-flash"
+	embedModel := "text-embedding-004"
 	geminiAPIKey := ""
 
 	// Load from config.json if it exists
