@@ -486,6 +486,53 @@ func main() {
 				throughput = float64(stats.Succeeded) / duration.Seconds()
 			}
 
+			// Collect dead jobs (final failures) with last_error for debugging (no message text).
+			type deadJob struct {
+				ConversationID int    `json:"conversation_id"`
+				Attempts       int    `json:"attempts"`
+				LastError      string `json:"last_error"`
+			}
+			var deadJobs []deadJob
+			deadRows, err := queueDB.Query(`SELECT payload_json, attempts, COALESCE(last_error, '') FROM jobs WHERE type='analysis' AND state='dead'`)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to query dead jobs: %w", err))
+			}
+			for deadRows.Next() {
+				var payloadJSON string
+				var attempts int
+				var lastErr string
+				if err := deadRows.Scan(&payloadJSON, &attempts, &lastErr); err != nil {
+					deadRows.Close()
+					return printErrorJSON(fmt.Errorf("failed to scan dead job: %w", err))
+				}
+				var p engine.AnalysisJobPayload
+				if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
+					// If the payload is malformed, still surface the error.
+					deadJobs = append(deadJobs, deadJob{
+						ConversationID: 0,
+						Attempts:       attempts,
+						LastError:      "invalid payload_json: " + err.Error(),
+					})
+					continue
+				}
+				deadJobs = append(deadJobs, deadJob{
+					ConversationID: p.ConversationID,
+					Attempts:       attempts,
+					LastError:      lastErr,
+				})
+			}
+			deadRows.Close()
+
+			// Error histogram (exact last_error strings -> count).
+			errCounts := map[string]int{}
+			for _, dj := range deadJobs {
+				key := dj.LastError
+				if key == "" {
+					key = "(empty last_error)"
+				}
+				errCounts[key]++
+			}
+
 			// Aggregate facet counts (no message text).
 			var topicsTotal, entitiesTotal, emotionsTotal, humorTotal int
 			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM topics WHERE chat_id = ?`, caseyChatID).Scan(&topicsTotal); err != nil {
@@ -517,6 +564,16 @@ func main() {
 					"throughput_convos_per_s": throughput,
 					"enqueued": enqueued,
 				},
+				"errors": map[string]interface{}{
+					"dead_jobs": len(deadJobs),
+					"dead_jobs_sample": func() []deadJob {
+						if len(deadJobs) <= 20 {
+							return deadJobs
+						}
+						return deadJobs[:20]
+					}(),
+					"dead_last_error_counts": errCounts,
+				},
 				"facets": map[string]interface{}{
 					"topics": topicsTotal,
 					"entities": entitiesTotal,
@@ -529,9 +586,292 @@ func main() {
 	}
 	computeTestCaseyCmd.Flags().IntVar(&caseyWorkers, "workers", 800, "Number of concurrent workers")
 
+	// Compute test: embed Casey conversations + facet rows and report throughput.
+	var caseyEmbedWorkers int
+	computeTestCaseyEmbeddingsCmd := &cobra.Command{
+		Use:   "test-casey-embeddings",
+		Short: "Embed all Casey conversations + facet rows (topics/entities/emotions/humor) and output aggregate counts + throughput",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+			if cfg.GeminiAPIKey == "" {
+				return printErrorJSON(fmt.Errorf("GEMINI_API_KEY is required"))
+			}
+
+			warehouseDB, err := sql.Open("sqlite3", cfg.EveDBPath+"?_journal_mode=WAL&_busy_timeout=5000")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open warehouse database: %w", err))
+			}
+			defer warehouseDB.Close()
+
+			// Resolve Casey contact_id
+			var caseyContactID int
+			err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name = 'Casey Adams' LIMIT 1`).Scan(&caseyContactID)
+			if err == sql.ErrNoRows {
+				err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name LIKE '%Casey Adams%' LIMIT 1`).Scan(&caseyContactID)
+			}
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to resolve Casey contact id: %w", err))
+			}
+
+			// Find Casey chat_id by inbound volume.
+			var caseyChatID int
+			err = warehouseDB.QueryRow(`
+				SELECT chat_id
+				FROM messages
+				WHERE sender_id = ?
+				GROUP BY chat_id
+				ORDER BY COUNT(*) DESC
+				LIMIT 1
+			`, caseyContactID).Scan(&caseyChatID)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to resolve Casey chat id: %w", err))
+			}
+
+			// Load conversation IDs
+			rows, err := warehouseDB.Query(`SELECT id FROM conversations WHERE chat_id = ? ORDER BY id`, caseyChatID)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to read conversations for chat %d: %w", caseyChatID, err))
+			}
+			var conversationIDs []int
+			for rows.Next() {
+				var id int
+				if err := rows.Scan(&id); err != nil {
+					rows.Close()
+					return printErrorJSON(fmt.Errorf("failed to scan conversation id: %w", err))
+				}
+				conversationIDs = append(conversationIDs, id)
+			}
+			rows.Close()
+			if len(conversationIDs) == 0 {
+				return printErrorJSON(fmt.Errorf("no conversations found for Casey chat_id=%d", caseyChatID))
+			}
+
+			// Load facet IDs (must exist from prior convo-all run).
+			type facetIDs struct {
+				Entities []int
+				Topics   []int
+				Emotions []int
+				Humor    []int
+			}
+			facet := facetIDs{}
+
+			loadIDs := func(sqlStr string) ([]int, error) {
+				r, err := warehouseDB.Query(sqlStr, caseyChatID)
+				if err != nil {
+					return nil, err
+				}
+				defer r.Close()
+				var ids []int
+				for r.Next() {
+					var id int
+					if err := r.Scan(&id); err != nil {
+						return nil, err
+					}
+					ids = append(ids, id)
+				}
+				return ids, r.Err()
+			}
+
+			if ids, err := loadIDs(`SELECT id FROM entities WHERE chat_id = ? ORDER BY id`); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to load entity ids: %w", err))
+			} else {
+				facet.Entities = ids
+			}
+			if ids, err := loadIDs(`SELECT id FROM topics WHERE chat_id = ? ORDER BY id`); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to load topic ids: %w", err))
+			} else {
+				facet.Topics = ids
+			}
+			if ids, err := loadIDs(`SELECT id FROM emotions WHERE chat_id = ? ORDER BY id`); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to load emotion ids: %w", err))
+			} else {
+				facet.Emotions = ids
+			}
+			if ids, err := loadIDs(`SELECT id FROM humor_items WHERE chat_id = ? ORDER BY id`); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to load humor_item ids: %w", err))
+			} else {
+				facet.Humor = ids
+			}
+
+			// Temp queue DB for repeatable embedding benchmark.
+			tmp, err := os.CreateTemp("", "eve-queue-casey-embeddings-*.db")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to create temp queue db: %w", err))
+			}
+			tmpPath := tmp.Name()
+			tmp.Close()
+			defer os.Remove(tmpPath)
+
+			if err := migrate.MigrateQueue(tmpPath); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to migrate temp queue db: %w", err))
+			}
+
+			queueDB, err := sql.Open("sqlite3", tmpPath+"?_journal_mode=WAL&_busy_timeout=5000")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open temp queue db: %w", err))
+			}
+			defer queueDB.Close()
+			queueDB.SetMaxOpenConns(25)
+			queueDB.SetMaxIdleConns(10)
+
+			q := queue.New(queueDB)
+
+			// Enqueue conversation embeddings
+			enqueuedConversation := 0
+			for _, convID := range conversationIDs {
+				if err := q.Enqueue(queue.EnqueueOptions{
+					Type: "embedding",
+					Key:  fmt.Sprintf("embedding:conversation:%d:%s", convID, cfg.EmbedModel),
+					Payload: engine.EmbeddingJobPayload{
+						EntityType: "conversation",
+						EntityID:   convID,
+					},
+					MaxAttempts: 3,
+				}); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to enqueue conversation embedding %d: %w", convID, err))
+				}
+				enqueuedConversation++
+			}
+
+			// Enqueue facet embeddings (these are the “analysis tags” you asked for)
+			enqueuedFacets := map[string]int{"entity": 0, "topic": 0, "emotion": 0, "humor_item": 0}
+			for _, id := range facet.Entities {
+				if err := q.Enqueue(queue.EnqueueOptions{
+					Type: "embedding",
+					Key:  fmt.Sprintf("embedding:entity:%d:%s", id, cfg.EmbedModel),
+					Payload: engine.EmbeddingJobPayload{EntityType: "entity", EntityID: id},
+					MaxAttempts: 3,
+				}); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to enqueue entity embedding %d: %w", id, err))
+				}
+				enqueuedFacets["entity"]++
+			}
+			for _, id := range facet.Topics {
+				if err := q.Enqueue(queue.EnqueueOptions{
+					Type: "embedding",
+					Key:  fmt.Sprintf("embedding:topic:%d:%s", id, cfg.EmbedModel),
+					Payload: engine.EmbeddingJobPayload{EntityType: "topic", EntityID: id},
+					MaxAttempts: 3,
+				}); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to enqueue topic embedding %d: %w", id, err))
+				}
+				enqueuedFacets["topic"]++
+			}
+			for _, id := range facet.Emotions {
+				if err := q.Enqueue(queue.EnqueueOptions{
+					Type: "embedding",
+					Key:  fmt.Sprintf("embedding:emotion:%d:%s", id, cfg.EmbedModel),
+					Payload: engine.EmbeddingJobPayload{EntityType: "emotion", EntityID: id},
+					MaxAttempts: 3,
+				}); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to enqueue emotion embedding %d: %w", id, err))
+				}
+				enqueuedFacets["emotion"]++
+			}
+			for _, id := range facet.Humor {
+				if err := q.Enqueue(queue.EnqueueOptions{
+					Type: "embedding",
+					Key:  fmt.Sprintf("embedding:humor_item:%d:%s", id, cfg.EmbedModel),
+					Payload: engine.EmbeddingJobPayload{EntityType: "humor_item", EntityID: id},
+					MaxAttempts: 3,
+				}); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to enqueue humor_item embedding %d: %w", id, err))
+				}
+				enqueuedFacets["humor_item"]++
+			}
+
+			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
+			engineCfg := engine.DefaultConfig()
+			if caseyEmbedWorkers > 0 {
+				engineCfg.WorkerCount = caseyEmbedWorkers
+			}
+			engineCfg.LeaseOwner = fmt.Sprintf("casey-embeddings-%d", time.Now().UnixNano())
+
+			eng := engine.New(q, engineCfg)
+			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
+
+			startTime := time.Now()
+			stats, err := eng.Run(context.Background())
+			duration := time.Since(startTime)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("compute run failed: %w", err))
+			}
+
+			throughput := 0.0
+			if duration.Seconds() > 0 {
+				throughput = float64(stats.Succeeded) / duration.Seconds()
+			}
+
+			// Counts of embeddings present after run (no vectors printed).
+			var convEmbCount int
+			if err := warehouseDB.QueryRow(`
+				SELECT COUNT(*) FROM embeddings
+				WHERE entity_type = 'conversation'
+				  AND entity_id IN (SELECT id FROM conversations WHERE chat_id = ?)
+				  AND model = ?
+			`, caseyChatID, cfg.EmbedModel).Scan(&convEmbCount); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count conversation embeddings: %w", err))
+			}
+
+			var entityEmb, topicEmb, emotionEmb, humorEmb int
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM embeddings WHERE entity_type='entity' AND model=?`, cfg.EmbedModel).Scan(&entityEmb); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count entity embeddings: %w", err))
+			}
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM embeddings WHERE entity_type='topic' AND model=?`, cfg.EmbedModel).Scan(&topicEmb); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count topic embeddings: %w", err))
+			}
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM embeddings WHERE entity_type='emotion' AND model=?`, cfg.EmbedModel).Scan(&emotionEmb); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count emotion embeddings: %w", err))
+			}
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM embeddings WHERE entity_type='humor_item' AND model=?`, cfg.EmbedModel).Scan(&humorEmb); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count humor_item embeddings: %w", err))
+			}
+
+			output := map[string]interface{}{
+				"ok": true,
+				"casey_contact_id": caseyContactID,
+				"casey_chat_id": caseyChatID,
+				"embed_model": cfg.EmbedModel,
+				"conversations_total": len(conversationIDs),
+				"facet_rows_total": map[string]int{
+					"entities": len(facet.Entities),
+					"topics": len(facet.Topics),
+					"emotions": len(facet.Emotions),
+					"humor_items": len(facet.Humor),
+				},
+				"run": map[string]interface{}{
+					"workers": engineCfg.WorkerCount,
+					"duration": duration.Seconds(),
+					"succeeded": stats.Succeeded,
+					"failed": stats.Failed,
+					"skipped": stats.Skipped,
+					"throughput_embeddings_per_s": throughput,
+					"enqueued": map[string]int{
+						"conversation": enqueuedConversation,
+						"entity": enqueuedFacets["entity"],
+						"topic": enqueuedFacets["topic"],
+						"emotion": enqueuedFacets["emotion"],
+						"humor_item": enqueuedFacets["humor_item"],
+					},
+				},
+				"embeddings_present": map[string]int{
+					"conversation": convEmbCount,
+					"entity": entityEmb,
+					"topic": topicEmb,
+					"emotion": emotionEmb,
+					"humor_item": humorEmb,
+				},
+			}
+
+			return printJSON(output)
+		},
+	}
+	computeTestCaseyEmbeddingsCmd.Flags().IntVar(&caseyEmbedWorkers, "workers", 800, "Number of concurrent workers")
+
 	computeCmd.AddCommand(computeStatusCmd)
 	computeCmd.AddCommand(computeRunCmd)
 	computeCmd.AddCommand(computeTestCaseyCmd)
+	computeCmd.AddCommand(computeTestCaseyEmbeddingsCmd)
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)

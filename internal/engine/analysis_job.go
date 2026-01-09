@@ -109,6 +109,9 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 
 	// Extract raw text from response
 	outputText := extractTextFromResponse(resp)
+	if strings.TrimSpace(outputText) == "" {
+		return fmt.Errorf("empty model output (finishReasons=%s safetyRatings=%s)", summarizeFinishReasons(resp), summarizeSafetyRatings(resp))
+	}
 
 	// Parse structured output and persist
 	switch payload.EvePromptID {
@@ -125,6 +128,38 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 	}
 
 	return nil
+}
+
+func summarizeFinishReasons(resp *gemini.GenerateContentResponse) string {
+	if resp == nil || len(resp.Candidates) == 0 {
+		return "[]"
+	}
+	reasons := make([]string, 0, len(resp.Candidates))
+	for _, c := range resp.Candidates {
+		if c.FinishReason != "" {
+			reasons = append(reasons, c.FinishReason)
+		}
+	}
+	b, _ := json.Marshal(reasons)
+	return string(b)
+}
+
+func summarizeSafetyRatings(resp *gemini.GenerateContentResponse) string {
+	if resp == nil || len(resp.Candidates) == 0 {
+		return "[]"
+	}
+	type r struct {
+		Category    string `json:"category"`
+		Probability string `json:"probability"`
+	}
+	var out []r
+	for _, c := range resp.Candidates {
+		for _, sr := range c.SafetyRatings {
+			out = append(out, r{Category: sr.Category, Probability: sr.Probability})
+		}
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
 }
 
 type convoAllV1Output struct {

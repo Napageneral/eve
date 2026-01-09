@@ -61,7 +61,7 @@ func TestEmbeddingJob_Conversation(t *testing.T) {
 	}
 
 	// Create embedding job handler
-	handler := NewEmbeddingJobHandler(warehouseDB, geminiClient, "text-embedding-005")
+	handler := NewEmbeddingJobHandler(warehouseDB, geminiClient, "gemini-embedding-001")
 
 	// Create job
 	payload := EmbeddingJobPayload{
@@ -177,7 +177,7 @@ func TestEmbeddingJob_Idempotency(t *testing.T) {
 	}
 
 	// Create embedding job handler
-	handler := NewEmbeddingJobHandler(warehouseDB, geminiClient, "text-embedding-005")
+	handler := NewEmbeddingJobHandler(warehouseDB, geminiClient, "gemini-embedding-001")
 
 	// Create job
 	payload := EmbeddingJobPayload{
@@ -220,6 +220,81 @@ func TestEmbeddingJob_Idempotency(t *testing.T) {
 	// Both calls should have happened (we don't dedupe at handler level)
 	if callCount != 2 {
 		t.Errorf("expected 2 API calls, got %d", callCount)
+	}
+}
+
+func TestEmbeddingJob_Facets(t *testing.T) {
+	// Create fake Gemini server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := gemini.EmbedContentResponse{
+			Embedding: &gemini.Embedding{
+				Values: []float64{0.1, 0.2, 0.3},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	// Create temp warehouse DB
+	tmpfile, err := os.CreateTemp("", "eve-warehouse-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	dbPath := tmpfile.Name()
+
+	// Run migrations
+	if err := migrate.MigrateWarehouse(dbPath); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+
+	warehouseDB, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer warehouseDB.Close()
+
+	// Insert test data (includes facet rows)
+	insertTestConversationForEmbedding(t, warehouseDB)
+
+	// Create Gemini client with fake server
+	geminiClient := gemini.NewClient("fake-key")
+	geminiClient.HttpClient.Transport = &embedTestTransport{testServer: server}
+
+	handler := NewEmbeddingJobHandler(warehouseDB, geminiClient, "gemini-embedding-001")
+
+	tests := []struct {
+		entityType string
+		entityID   int
+	}{
+		{entityType: "entity", entityID: 1},
+		{entityType: "topic", entityID: 1},
+		{entityType: "emotion", entityID: 1},
+		{entityType: "humor_item", entityID: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.entityType, func(t *testing.T) {
+			payload := EmbeddingJobPayload{EntityType: tt.entityType, EntityID: tt.entityID}
+			payloadJSON, _ := json.Marshal(payload)
+			job := &queue.Job{ID: "job-" + tt.entityType, Type: "embedding", PayloadJSON: string(payloadJSON)}
+			if err := handler(context.Background(), job); err != nil {
+				t.Fatalf("job failed: %v", err)
+			}
+			var count int
+			if err := warehouseDB.QueryRow(
+				`SELECT COUNT(*) FROM embeddings WHERE entity_type = ? AND entity_id = ?`,
+				tt.entityType, tt.entityID,
+			).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("expected 1 embedding row, got %d", count)
+			}
+		})
 	}
 }
 
@@ -287,6 +362,17 @@ func insertTestConversationForEmbedding(t *testing.T, db *sql.DB) {
 			(1, 1, 1, 'Hello', ?, 0, 'msg-1', 1),
 			(2, 1, 2, 'Hi there', ?, 1, 'msg-2', 1)
 	`, now.Add(-10*time.Minute), now.Add(-5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert facet rows for embedding entity types (entity/topic/emotion/humor_item)
+	_, err = db.Exec(`
+		INSERT INTO entities (id, conversation_id, chat_id, contact_id, title) VALUES (1, 1, 1, 1, 'Pizza');
+		INSERT INTO topics (id, conversation_id, chat_id, contact_id, title) VALUES (1, 1, 1, 1, 'Lunch');
+		INSERT INTO emotions (id, conversation_id, chat_id, contact_id, emotion_type) VALUES (1, 1, 1, 1, 'Happy');
+		INSERT INTO humor_items (id, conversation_id, chat_id, contact_id, snippet) VALUES (1, 1, 1, 1, 'lol');
+	`)
 	if err != nil {
 		t.Fatal(err)
 	}

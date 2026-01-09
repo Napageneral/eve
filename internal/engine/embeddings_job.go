@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/tylerchilds/eve/internal/db"
 	"github.com/tylerchilds/eve/internal/encoding"
@@ -117,6 +118,50 @@ func getEntityText(ctx context.Context, warehouseDB *sql.DB, entityType string, 
 			return chatName.String, nil
 		}
 		return fmt.Sprintf("Chat %d", entityID), nil
+
+	case "entity":
+		var title string
+		if err := warehouseDB.QueryRowContext(ctx, "SELECT title FROM entities WHERE id = ?", entityID).Scan(&title); err != nil {
+			return "", fmt.Errorf("failed to read entity: %w", err)
+		}
+		title = strings.TrimSpace(title)
+		if title == "" {
+			return "", fmt.Errorf("empty entity title")
+		}
+		return "entity: " + title, nil
+
+	case "topic":
+		var title string
+		if err := warehouseDB.QueryRowContext(ctx, "SELECT title FROM topics WHERE id = ?", entityID).Scan(&title); err != nil {
+			return "", fmt.Errorf("failed to read topic: %w", err)
+		}
+		title = strings.TrimSpace(title)
+		if title == "" {
+			return "", fmt.Errorf("empty topic title")
+		}
+		return "topic: " + title, nil
+
+	case "emotion":
+		var emotionType string
+		if err := warehouseDB.QueryRowContext(ctx, "SELECT emotion_type FROM emotions WHERE id = ?", entityID).Scan(&emotionType); err != nil {
+			return "", fmt.Errorf("failed to read emotion: %w", err)
+		}
+		emotionType = strings.TrimSpace(emotionType)
+		if emotionType == "" {
+			return "", fmt.Errorf("empty emotion_type")
+		}
+		return "emotion: " + emotionType, nil
+
+	case "humor_item":
+		var snippet string
+		if err := warehouseDB.QueryRowContext(ctx, "SELECT snippet FROM humor_items WHERE id = ?", entityID).Scan(&snippet); err != nil {
+			return "", fmt.Errorf("failed to read humor_item: %w", err)
+		}
+		snippet = strings.TrimSpace(snippet)
+		if snippet == "" {
+			return "", fmt.Errorf("empty humor snippet")
+		}
+		return "humor: " + snippet, nil
 
 	default:
 		return "", fmt.Errorf("unsupported entity type: %s", entityType)
