@@ -12,6 +12,7 @@ func TestLeakyBucket_WaitsForRate(t *testing.T) {
 	if b == nil {
 		t.Fatalf("expected non-nil bucket")
 	}
+	t.Cleanup(b.Close)
 
 	ctx := context.Background()
 	start := time.Now()

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -128,8 +129,21 @@ func TestMigrationIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to query schema_migrations: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("Expected 1 migration entry after two runs, got %d", count)
+	entries, err := queueMigrations.ReadDir("sql/queue")
+	if err != nil {
+		t.Fatalf("Failed to read embedded queue migrations: %v", err)
+	}
+	expected := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".sql") {
+			expected++
+		}
+	}
+	if count != expected {
+		t.Errorf("Expected %d migration entries after two runs, got %d", expected, count)
 	}
 }
 

@@ -33,6 +33,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 			type TEXT NOT NULL,
 			key TEXT NOT NULL UNIQUE,
 			payload_json TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
 			state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'succeeded', 'failed', 'dead')),
 			attempts INTEGER NOT NULL DEFAULT 0,
 			max_attempts INTEGER NOT NULL DEFAULT 8,
@@ -48,6 +49,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 		CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type);
 		CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(lease_owner, lease_expires_ts) WHERE state = 'leased';
 		CREATE INDEX IF NOT EXISTS idx_jobs_run_after ON jobs(run_after_ts) WHERE state = 'pending';
+		CREATE INDEX IF NOT EXISTS idx_jobs_pending_priority ON jobs(state, priority, run_after_ts, created_ts) WHERE state = 'pending';
 	`
 
 	if _, err := db.Exec(schema); err != nil {

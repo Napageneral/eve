@@ -66,8 +66,10 @@ func Load() *Config {
 	analysisModel := "gemini-3-flash-preview"
 	embedModel := "gemini-embedding-001"
 	geminiAPIKey := ""
-	analysisRPM := 1000
-	embedRPM := 1000
+	// RPM defaults:
+	// 0 = auto (recommended). When unset, Eve empirically probes the safe RPM using 429/timeout signals.
+	analysisRPM := 0
+	embedRPM := 0
 
 	// Load from config.json if it exists
 	fileCfg := loadFileConfig(configPath)
@@ -100,12 +102,12 @@ func Load() *Config {
 		embedModel = envEmbed
 	}
 	if v := os.Getenv("EVE_GEMINI_ANALYSIS_RPM"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			analysisRPM = n
 		}
 	}
 	if v := os.Getenv("EVE_GEMINI_EMBED_RPM"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			embedRPM = n
 		}
 	}

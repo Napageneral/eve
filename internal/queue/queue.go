@@ -16,6 +16,7 @@ type Job struct {
 	Type           string
 	Key            string
 	PayloadJSON    string
+	Priority       int
 	State          string
 	Attempts       int
 	MaxAttempts    int
@@ -44,6 +45,7 @@ type EnqueueOptions struct {
 	Payload     interface{}
 	MaxAttempts int
 	RunAfter    time.Duration // delay before job becomes available
+	Priority    int           // higher = sooner
 }
 
 // Enqueue adds a job to the queue idempotently using the unique key
@@ -69,12 +71,12 @@ func (q *Queue) Enqueue(opts EnqueueOptions) error {
 	// If key exists, update nothing (no-op)
 	_, err = q.db.Exec(`
 		INSERT INTO jobs (
-			id, type, key, payload_json, state, attempts, max_attempts,
+			id, type, key, payload_json, priority, state, attempts, max_attempts,
 			run_after_ts, created_ts, updated_ts
-		) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
 		ON CONFLICT(key) DO NOTHING
 	`, uuid.New().String(), opts.Type, opts.Key, string(payloadJSON),
-		maxAttempts, runAfterTS, now, now)
+		opts.Priority, maxAttempts, runAfterTS, now, now)
 
 	if err != nil {
 		return fmt.Errorf("failed to enqueue job: %w", err)
@@ -108,13 +110,13 @@ func (q *Queue) Lease(opts LeaseOptions) ([]*Job, error) {
 
 	// Find pending jobs that are ready to run
 	rows, err := tx.Query(`
-		SELECT id, type, key, payload_json, state, attempts, max_attempts,
+		SELECT id, type, key, payload_json, priority, state, attempts, max_attempts,
 		       run_after_ts, lease_owner, lease_expires_ts, last_error,
 		       created_ts, updated_ts
 		FROM jobs
 		WHERE state = 'pending'
 		  AND run_after_ts <= ?
-		ORDER BY run_after_ts, created_ts
+		ORDER BY priority DESC, run_after_ts, created_ts
 		LIMIT ?
 	`, now, opts.BatchSize)
 	if err != nil {
@@ -127,7 +129,7 @@ func (q *Queue) Lease(opts LeaseOptions) ([]*Job, error) {
 	for rows.Next() {
 		job := &Job{}
 		err := rows.Scan(
-			&job.ID, &job.Type, &job.Key, &job.PayloadJSON, &job.State,
+			&job.ID, &job.Type, &job.Key, &job.PayloadJSON, &job.Priority, &job.State,
 			&job.Attempts, &job.MaxAttempts, &job.RunAfterTS,
 			&job.LeaseOwner, &job.LeaseExpiresTS, &job.LastError,
 			&job.CreatedTS, &job.UpdatedTS,

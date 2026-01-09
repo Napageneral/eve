@@ -62,7 +62,18 @@ func (c *Client) SetAnalysisRPM(rpm int) {
 	if c == nil {
 		return
 	}
-	c.analysisLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+	if rpm <= 0 {
+		if c.analysisLimiter != nil {
+			c.analysisLimiter.Close()
+		}
+		c.analysisLimiter = nil
+		return
+	}
+	if c.analysisLimiter == nil {
+		c.analysisLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+		return
+	}
+	c.analysisLimiter.SetRPM(rpm)
 }
 
 // SetEmbedRPM sets a smooth rate limit for EmbedContent requests.
@@ -71,7 +82,18 @@ func (c *Client) SetEmbedRPM(rpm int) {
 	if c == nil {
 		return
 	}
-	c.embedLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+	if rpm <= 0 {
+		if c.embedLimiter != nil {
+			c.embedLimiter.Close()
+		}
+		c.embedLimiter = nil
+		return
+	}
+	if c.embedLimiter == nil {
+		c.embedLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+		return
+	}
+	c.embedLimiter.SetRPM(rpm)
 }
 
 // GenerateContentRequest represents the request for generateContent API

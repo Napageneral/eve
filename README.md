@@ -62,8 +62,8 @@ Eve will **smooth** outbound Gemini traffic to avoid spiky bursts (which can cau
 Set these environment variables to match your Gemini quota tier:
 
 - `GEMINI_API_KEY`: required
-- `EVE_GEMINI_ANALYSIS_RPM`: max analysis requests per minute (default: `1000`)
-- `EVE_GEMINI_EMBED_RPM`: max embedding requests per minute (default: `1000`)
+- `EVE_GEMINI_ANALYSIS_RPM`: max analysis requests per minute (default: `0` = auto)
+- `EVE_GEMINI_EMBED_RPM`: max embedding requests per minute (default: `0` = auto)
 
 Example (Tier 3-ish defaults you mentioned):
 

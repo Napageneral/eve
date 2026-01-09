@@ -290,9 +290,21 @@ func main() {
 
 			// Create Gemini client
 			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
-			// Smooth RPM limits (tier-appropriate; avoids spiky bursts/429 storms on consumer networks).
-			geminiClient.SetAnalysisRPM(cfg.AnalysisRPM)
-			geminiClient.SetEmbedRPM(cfg.EmbedRPM)
+			// RPM limits:
+			// - If set explicitly (non-zero), use fixed RPM.
+			// - If 0, auto-probe RPM using 429/timeout/net signals.
+			var analysisRPMCtrl *engine.AutoRPMController
+			var embedRPMCtrl *engine.AutoRPMController
+			if cfg.AnalysisRPM > 0 {
+				geminiClient.SetAnalysisRPM(cfg.AnalysisRPM)
+			} else {
+				analysisRPMCtrl = engine.NewAutoRPMController(engine.DefaultAutoRPMConfig(), geminiClient.SetAnalysisRPM)
+			}
+			if cfg.EmbedRPM > 0 {
+				geminiClient.SetEmbedRPM(cfg.EmbedRPM)
+			} else {
+				embedRPMCtrl = engine.NewAutoRPMController(engine.DefaultAutoRPMConfig(), geminiClient.SetEmbedRPM)
+			}
 
 			// Create engine with config
 			engineCfg := engine.DefaultConfig()
@@ -331,6 +343,14 @@ func main() {
 				}()
 			}
 
+			// Start RPM auto-controllers now that we have a cancellation context.
+			if analysisRPMCtrl != nil {
+				analysisRPMCtrl.Start(ctx)
+			}
+			if embedRPMCtrl != nil {
+				embedRPMCtrl.Start(ctx)
+			}
+
 			// Serialize DB writes into micro-batched txs to reduce SQLite write contention.
 			dbWriter := engine.NewTxBatchWriter(warehouseDB, engine.TxBatchWriterConfig{
 				BatchSize:     25,
@@ -352,6 +372,19 @@ func main() {
 					start := time.Now()
 					err := base(ctx, job)
 					ctrl.Observe(time.Since(start), err)
+					// Feed RPM auto-controllers by job type (each job corresponds to one API call).
+					if job != nil {
+						switch job.Type {
+						case "analysis":
+							if analysisRPMCtrl != nil {
+								analysisRPMCtrl.Observe(err)
+							}
+						case "embedding":
+							if embedRPMCtrl != nil {
+								embedRPMCtrl.Observe(err)
+							}
+						}
+					}
 					sem.Release()
 					return err
 				}
@@ -385,9 +418,33 @@ func main() {
 				"workers":               engineCfg.WorkerCount,
 				"analysis_model":        cfg.AnalysisModel,
 				"embed_model":           cfg.EmbedModel,
-				"analysis_rpm":          cfg.AnalysisRPM,
-				"embed_rpm":             cfg.EmbedRPM,
-				"adaptive_controller":   json.RawMessage(ctrl.SnapshotJSON()),
+				"analysis_rpm_config":   cfg.AnalysisRPM,
+				"embed_rpm_config":      cfg.EmbedRPM,
+				"analysis_rpm_effective": func() int {
+					if analysisRPMCtrl != nil {
+						return analysisRPMCtrl.CurrentRPM()
+					}
+					return cfg.AnalysisRPM
+				}(),
+				"embed_rpm_effective": func() int {
+					if embedRPMCtrl != nil {
+						return embedRPMCtrl.CurrentRPM()
+					}
+					return cfg.EmbedRPM
+				}(),
+				"adaptive_controller": json.RawMessage(ctrl.SnapshotJSON()),
+				"analysis_rpm_controller": func() json.RawMessage {
+					if analysisRPMCtrl == nil {
+						return json.RawMessage("null")
+					}
+					return analysisRPMCtrl.SnapshotJSON()
+				}(),
+				"embed_rpm_controller": func() json.RawMessage {
+					if embedRPMCtrl == nil {
+						return json.RawMessage("null")
+					}
+					return embedRPMCtrl.SnapshotJSON()
+				}(),
 			}
 			return printJSON(output)
 		},
@@ -554,8 +611,9 @@ func main() {
 			enqueued := 0
 			for _, convID := range conversationIDs {
 				err := q.Enqueue(queue.EnqueueOptions{
-					Type: "analysis",
-					Key:  fmt.Sprintf("analysis:conversation:%d:convo-all-v1", convID),
+					Type:     "analysis",
+					Key:      fmt.Sprintf("analysis:conversation:%d:convo-all-v1", convID),
+					Priority: 20,
 					Payload: engine.AnalysisJobPayload{
 						ConversationID: convID,
 						EvePromptID:    "convo-all-v1",
@@ -570,8 +628,13 @@ func main() {
 
 			// Run compute engine (analysis only)
 			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
-			geminiClient.SetAnalysisRPM(cfg.AnalysisRPM)
-			geminiClient.SetEmbedRPM(cfg.EmbedRPM)
+			var analysisRPMCtrl *engine.AutoRPMController
+			if cfg.AnalysisRPM > 0 {
+				geminiClient.SetAnalysisRPM(cfg.AnalysisRPM)
+			} else {
+				analysisRPMCtrl = engine.NewAutoRPMController(engine.DefaultAutoRPMConfig(), geminiClient.SetAnalysisRPM)
+				analysisRPMCtrl.Start(context.Background())
+			}
 			engineCfg := engine.DefaultConfig()
 			if caseyWorkers > 0 {
 				engineCfg.WorkerCount = caseyWorkers
@@ -592,7 +655,17 @@ func main() {
 			})
 			dbWriter.Start()
 			defer dbWriter.Close()
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, metrics, dbWriter))
+			baseHandler := engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, metrics, dbWriter)
+			if analysisRPMCtrl != nil {
+				// Feed the auto-RPM controller so it can probe the true sustainable rate.
+				base := baseHandler
+				baseHandler = func(ctx context.Context, job *queue.Job) error {
+					err := base(ctx, job)
+					analysisRPMCtrl.Observe(err)
+					return err
+				}
+			}
+			eng.RegisterHandler("analysis", baseHandler)
 
 			startTime := time.Now()
 			stats, err := eng.Run(context.Background())
@@ -804,7 +877,13 @@ func main() {
 				"conversations_selected": len(conversationIDs),
 				"analysis_prompt_id":     "convo-all-v1",
 				"analysis_model":         cfg.AnalysisModel,
-				"analysis_rpm":           cfg.AnalysisRPM,
+				"analysis_rpm_config":    cfg.AnalysisRPM,
+				"analysis_rpm_effective": func() int {
+					if analysisRPMCtrl != nil {
+						return analysisRPMCtrl.CurrentRPM()
+					}
+					return cfg.AnalysisRPM
+				}(),
 				"run": map[string]interface{}{
 					"workers":                 engineCfg.WorkerCount,
 					"duration":                duration.Seconds(),
@@ -996,8 +1075,13 @@ func main() {
 			q := queue.New(queueDB)
 
 			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
-			geminiClient.SetAnalysisRPM(cfg.AnalysisRPM) // not used in this command, but keep consistent
-			geminiClient.SetEmbedRPM(cfg.EmbedRPM)
+			var embedRPMCtrl *engine.AutoRPMController
+			if cfg.EmbedRPM > 0 {
+				geminiClient.SetEmbedRPM(cfg.EmbedRPM)
+			} else {
+				embedRPMCtrl = engine.NewAutoRPMController(engine.DefaultAutoRPMConfig(), geminiClient.SetEmbedRPM)
+				embedRPMCtrl.Start(context.Background())
+			}
 			engineCfg := engine.DefaultConfig()
 			if caseyEmbedWorkers > 0 {
 				engineCfg.WorkerCount = caseyEmbedWorkers
@@ -1028,7 +1112,16 @@ func main() {
 				}
 
 				eng := engine.New(q, engineCfg)
-				eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.EmbedModel, dbWriter))
+				baseHandler := engine.NewEmbeddingJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.EmbedModel, dbWriter)
+				if embedRPMCtrl != nil {
+					base := baseHandler
+					baseHandler = func(ctx context.Context, job *queue.Job) error {
+						err := base(ctx, job)
+						embedRPMCtrl.Observe(err)
+						return err
+					}
+				}
+				eng.RegisterHandler("embedding", baseHandler)
 
 				startTime := time.Now()
 				stats, err := eng.Run(context.Background())
@@ -1059,8 +1152,9 @@ func main() {
 				enqueuedConversation := 0
 				for _, convID := range conversationIDs {
 					if err := q.Enqueue(queue.EnqueueOptions{
-						Type: "embedding",
-						Key:  fmt.Sprintf("embedding:conversation:%d:%s", convID, cfg.EmbedModel),
+						Type:     "embedding",
+						Key:      fmt.Sprintf("embedding:conversation:%d:%s", convID, cfg.EmbedModel),
+						Priority: 30,
 						Payload: engine.EmbeddingJobPayload{
 							EntityType: "conversation",
 							EntityID:   convID,
@@ -1083,6 +1177,7 @@ func main() {
 					if err := q.Enqueue(queue.EnqueueOptions{
 						Type:        "embedding",
 						Key:         fmt.Sprintf("embedding:entity:%d:%s", id, cfg.EmbedModel),
+						Priority:    10,
 						Payload:     engine.EmbeddingJobPayload{EntityType: "entity", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
@@ -1094,6 +1189,7 @@ func main() {
 					if err := q.Enqueue(queue.EnqueueOptions{
 						Type:        "embedding",
 						Key:         fmt.Sprintf("embedding:topic:%d:%s", id, cfg.EmbedModel),
+						Priority:    10,
 						Payload:     engine.EmbeddingJobPayload{EntityType: "topic", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
@@ -1105,6 +1201,7 @@ func main() {
 					if err := q.Enqueue(queue.EnqueueOptions{
 						Type:        "embedding",
 						Key:         fmt.Sprintf("embedding:emotion:%d:%s", id, cfg.EmbedModel),
+						Priority:    10,
 						Payload:     engine.EmbeddingJobPayload{EntityType: "emotion", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
@@ -1116,6 +1213,7 @@ func main() {
 					if err := q.Enqueue(queue.EnqueueOptions{
 						Type:        "embedding",
 						Key:         fmt.Sprintf("embedding:humor_item:%d:%s", id, cfg.EmbedModel),
+						Priority:    10,
 						Payload:     engine.EmbeddingJobPayload{EntityType: "humor_item", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
@@ -1155,11 +1253,17 @@ func main() {
 			}
 
 			output := map[string]interface{}{
-				"ok":                  true,
-				"casey_contact_id":    caseyContactID,
-				"casey_chat_id":       caseyChatID,
-				"embed_model":         cfg.EmbedModel,
-				"embed_rpm":           cfg.EmbedRPM,
+				"ok":               true,
+				"casey_contact_id": caseyContactID,
+				"casey_chat_id":    caseyChatID,
+				"embed_model":      cfg.EmbedModel,
+				"embed_rpm_config": cfg.EmbedRPM,
+				"embed_rpm_effective": func() int {
+					if embedRPMCtrl != nil {
+						return embedRPMCtrl.CurrentRPM()
+					}
+					return cfg.EmbedRPM
+				}(),
 				"conversations_total": len(conversationIDs),
 				"facet_rows_total": map[string]int{
 					"entities":    len(facet.Entities),

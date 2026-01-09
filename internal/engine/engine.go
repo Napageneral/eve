@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,9 +36,9 @@ type Config struct {
 // DefaultConfig returns sensible defaults
 func DefaultConfig() Config {
 	return Config{
-		WorkerCount:     10,
-		LeaseTTL:        5 * time.Minute,
-		LeaseOwner:      "engine",
+		WorkerCount: 10,
+		LeaseTTL:    5 * time.Minute,
+		LeaseOwner:  "engine",
 		// Keep workers saturated for bulk backfills by leasing larger batches and polling
 		// frequently when idle. Scheduler will also lease immediately when work is available.
 		BatchSize:       1000,
@@ -142,7 +143,12 @@ func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 			})
 
 			if err != nil {
-				log.Printf("failed to lease jobs: %v", err)
+				// Under very high throughput, the queue DB can briefly return SQLITE_BUSY
+				// while other goroutines ACK/FAIL jobs. This is expected with SQLite's
+				// single-writer semantics; just retry without spamming logs.
+				if !isSQLiteBusy(err) {
+					log.Printf("failed to lease jobs: %v", err)
+				}
 				time.Sleep(e.config.PollInterval)
 				continue
 			}
@@ -189,6 +195,14 @@ func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 	}
 
 	return stats, nil
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "database is locked") || strings.Contains(s, "SQLITE_BUSY")
 }
 
 // worker processes jobs from the work channel
