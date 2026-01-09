@@ -181,7 +181,7 @@ func TestAnalysisJobHandler_EndToEnd(t *testing.T) {
 	defer fakeServer.Close()
 
 	// Create analysis job handler
-		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash")
+		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash", "", 0, 0)
 
 	// Create job
 	payload := AnalysisJobPayload{
@@ -266,7 +266,7 @@ func TestAnalysisJobHandler_InvalidPayload(t *testing.T) {
 	defer cleanup()
 
 	client := gemini.NewClient("fake-api-key")
-		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash")
+		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash", "", 0, 0)
 
 	job := &queue.Job{
 		ID:          "test-job-1",
@@ -287,7 +287,7 @@ func TestAnalysisJobHandler_ConversationNotFound(t *testing.T) {
 	defer cleanup()
 
 	client := gemini.NewClient("fake-api-key")
-		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash")
+		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash", "", 0, 0)
 
 	payload := AnalysisJobPayload{
 		ConversationID: 999, // doesn't exist

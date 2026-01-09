@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tylerchilds/eve/internal/db"
@@ -24,14 +25,24 @@ type AnalysisJobHandler struct {
 	warehouseDB  *sql.DB
 	geminiClient *gemini.Client
 	model        string
+	thinkingLevel string
+	maxMessages int
+	maxOutputTokens int
 }
 
 // NewAnalysisJobHandler creates a new analysis job handler
-func NewAnalysisJobHandler(warehouseDB *sql.DB, geminiClient *gemini.Client, model string) JobHandler {
+func NewAnalysisJobHandler(warehouseDB *sql.DB, geminiClient *gemini.Client, model string, thinkingLevel string, maxMessages int, maxOutputTokens int) JobHandler {
+	// Sensible default for Gemini 3 Flash throughput if user didn't specify.
+	if thinkingLevel == "" && strings.HasPrefix(model, "gemini-3-flash") {
+		thinkingLevel = "minimal"
+	}
 	h := &AnalysisJobHandler{
 		warehouseDB:  warehouseDB,
 		geminiClient: geminiClient,
 		model:        model,
+		thinkingLevel: thinkingLevel,
+		maxMessages: maxMessages,
+		maxOutputTokens: maxOutputTokens,
 	}
 	return func(ctx context.Context, job *queue.Job) error {
 		return h.handleJob(ctx, job.PayloadJSON)
@@ -53,9 +64,16 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 		return fmt.Errorf("failed to read conversation: %w", err)
 	}
 
+	// Keep prompts bounded for throughput and token-budget safety.
+	if h.maxMessages > 0 && len(conversation.Messages) > h.maxMessages {
+		conversation.Messages = conversation.Messages[len(conversation.Messages)-h.maxMessages:]
+	}
+
 	// Encode conversation
 	opts := encoding.DefaultEncodeOptions()
-	opts.IncludeSendTime = true
+	opts.IncludeSendTime = false
+	opts.IncludeAttachments = false
+	opts.IncludeReactions = false
 	encodedText := encoding.EncodeConversation(*conversation, opts)
 
 	// Build simple analysis prompt
@@ -71,6 +89,19 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 				},
 			},
 		},
+	}
+	if h.thinkingLevel != "" {
+		req.GenerationConfig = &gemini.GenerationConfig{
+			ThinkingConfig: &gemini.ThinkingConfig{
+				ThinkingLevel: h.thinkingLevel,
+			},
+		}
+	}
+	if h.maxOutputTokens > 0 {
+		if req.GenerationConfig == nil {
+			req.GenerationConfig = &gemini.GenerationConfig{}
+		}
+		req.GenerationConfig.MaxOutputTokens = h.maxOutputTokens
 	}
 
 	// Call Gemini for analysis

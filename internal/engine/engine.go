@@ -38,8 +38,10 @@ func DefaultConfig() Config {
 		WorkerCount:     10,
 		LeaseTTL:        5 * time.Minute,
 		LeaseOwner:      "engine",
-		BatchSize:       100,
-		PollInterval:    1 * time.Second,
+		// Keep workers saturated for bulk backfills by leasing larger batches and polling
+		// frequently when idle. Scheduler will also lease immediately when work is available.
+		BatchSize:       1000,
+		PollInterval:    50 * time.Millisecond,
 		RequeueInterval: 30 * time.Second,
 		ShutdownTimeout: 30 * time.Second,
 	}
@@ -71,6 +73,8 @@ func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 	stats := &Stats{}
 	var statsMu sync.Mutex
 
+	schedulerDone := make(chan struct{})
+
 	// Start requeue ticker
 	requeueTicker := time.NewTicker(e.config.RequeueInterval)
 	defer requeueTicker.Stop()
@@ -91,6 +95,8 @@ func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-schedulerDone:
 				return
 			case <-requeueTicker.C:
 				requeued, err := e.queue.RequeueExpired()
@@ -116,46 +122,47 @@ func (e *Engine) Run(ctx context.Context) (*Stats, error) {
 	}
 
 	// Scheduler loop
-	pollTicker := time.NewTicker(e.config.PollInterval)
-	defer pollTicker.Stop()
-
-	schedulerDone := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer close(workChan) // Close work channel when scheduler exits
+		defer close(schedulerDone)
 
 		for {
-			select {
-			case <-ctx.Done():
-				close(schedulerDone)
+			// Respect cancellation
+			if ctx.Err() != nil {
 				return
-			case <-pollTicker.C:
-				// Lease a batch of jobs
-				jobs, err := e.queue.Lease(queue.LeaseOptions{
-					LeaseOwner: e.config.LeaseOwner,
-					LeaseTTL:   e.config.LeaseTTL,
-					BatchSize:  e.config.BatchSize,
-				})
+			}
 
-				if err != nil {
-					log.Printf("failed to lease jobs: %v", err)
-					continue
+			// Lease a batch of jobs
+			jobs, err := e.queue.Lease(queue.LeaseOptions{
+				LeaseOwner: e.config.LeaseOwner,
+				LeaseTTL:   e.config.LeaseTTL,
+				BatchSize:  e.config.BatchSize,
+			})
+
+			if err != nil {
+				log.Printf("failed to lease jobs: %v", err)
+				time.Sleep(e.config.PollInterval)
+				continue
+			}
+
+			if len(jobs) == 0 {
+				// No jobs ready. If queue is fully drained (no pending, no leased), exit.
+				qstats, err := e.queue.GetStats()
+				if err == nil && qstats.Pending == 0 && qstats.Leased == 0 {
+					return
 				}
+				time.Sleep(e.config.PollInterval)
+				continue
+			}
 
-				if len(jobs) == 0 {
-					// No jobs available, check if we should exit
-					continue
-				}
-
-				// Send jobs to workers
-				for _, job := range jobs {
-					select {
-					case <-ctx.Done():
-						close(schedulerDone)
-						return
-					case workChan <- job:
-					}
+			// Send jobs to workers (blocks if workers are saturated).
+			for _, job := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				case workChan <- job:
 				}
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -279,7 +280,14 @@ func main() {
 
 			// Register job handlers
 			eng.RegisterHandler("fake", engine.FakeJobHandler)
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient, cfg.AnalysisModel))
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(
+				warehouseDB,
+				geminiClient,
+				cfg.AnalysisModel,
+				cfg.AnalysisThinkingLevel,
+				cfg.AnalysisMaxMessages,
+				cfg.AnalysisMaxOutputTokens,
+			))
 			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
 
 			// Setup context with cancellation
@@ -312,6 +320,16 @@ func main() {
 				return printErrorJSON(fmt.Errorf("compute run failed: %w", err))
 			}
 
+			throughput := 0.0
+			if duration.Seconds() > 0 {
+				throughput = float64(stats.Succeeded) / duration.Seconds()
+			}
+
+			effectiveThinking := cfg.AnalysisThinkingLevel
+			if effectiveThinking == "" && strings.HasPrefix(cfg.AnalysisModel, "gemini-3-flash") {
+				effectiveThinking = "minimal"
+			}
+
 			// Output stats
 			output := map[string]interface{}{
 				"ok":        true,
@@ -319,6 +337,14 @@ func main() {
 				"failed":    stats.Failed,
 				"skipped":   stats.Skipped,
 				"duration":  duration.Seconds(),
+				"throughput_jobs_per_s": throughput,
+				"workers":   engineCfg.WorkerCount,
+				"analysis_model": cfg.AnalysisModel,
+				"analysis_thinking_level": cfg.AnalysisThinkingLevel,
+				"analysis_thinking_level_effective": effectiveThinking,
+				"analysis_max_messages": cfg.AnalysisMaxMessages,
+				"analysis_max_output_tokens": cfg.AnalysisMaxOutputTokens,
+				"embed_model": cfg.EmbedModel,
 			}
 			return printJSON(output)
 		},
