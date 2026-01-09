@@ -91,17 +91,26 @@ type Part struct {
 // GenerateContentResponse represents the response from generateContent API
 type GenerateContentResponse struct {
 	Candidates []Candidate `json:"candidates,omitempty"`
+	PromptFeedback *PromptFeedback `json:"promptFeedback,omitempty"`
 	Error      *APIError   `json:"error,omitempty"`
+}
+
+type SafetyRating struct {
+	Category    string `json:"category"`
+	Probability string `json:"probability"`
+}
+
+type PromptFeedback struct {
+	BlockReason        string         `json:"blockReason,omitempty"`
+	BlockReasonMessage string         `json:"blockReasonMessage,omitempty"`
+	SafetyRatings      []SafetyRating `json:"safetyRatings,omitempty"`
 }
 
 // Candidate represents a generated response candidate
 type Candidate struct {
 	Content       Content `json:"content"`
 	FinishReason  string  `json:"finishReason,omitempty"`
-	SafetyRatings []struct {
-		Category    string `json:"category"`
-		Probability string `json:"probability"`
-	} `json:"safetyRatings,omitempty"`
+	SafetyRatings []SafetyRating `json:"safetyRatings,omitempty"`
 }
 
 // EmbedContentRequest represents the request for embedContent API

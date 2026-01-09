@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tylerchilds/eve/internal/db"
@@ -110,7 +111,7 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 	// Extract raw text from response
 	outputText := extractTextFromResponse(resp)
 	if strings.TrimSpace(outputText) == "" {
-		return fmt.Errorf("empty model output (finishReasons=%s safetyRatings=%s)", summarizeFinishReasons(resp), summarizeSafetyRatings(resp))
+		return fmt.Errorf("empty model output (promptFeedback=%s finishReasons=%s safetyRatings=%s)", summarizePromptFeedback(resp), summarizeFinishReasons(resp), summarizeSafetyRatings(resp))
 	}
 
 	// Parse structured output and persist
@@ -146,6 +147,11 @@ func summarizeFinishReasons(resp *gemini.GenerateContentResponse) string {
 
 func summarizeSafetyRatings(resp *gemini.GenerateContentResponse) string {
 	if resp == nil || len(resp.Candidates) == 0 {
+		// If the prompt was blocked, safety ratings may appear on promptFeedback instead.
+		if resp != nil && resp.PromptFeedback != nil && len(resp.PromptFeedback.SafetyRatings) > 0 {
+			b, _ := json.Marshal(resp.PromptFeedback.SafetyRatings)
+			return string(b)
+		}
 		return "[]"
 	}
 	type r struct {
@@ -159,6 +165,14 @@ func summarizeSafetyRatings(resp *gemini.GenerateContentResponse) string {
 		}
 	}
 	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+func summarizePromptFeedback(resp *gemini.GenerateContentResponse) string {
+	if resp == nil || resp.PromptFeedback == nil {
+		return "null"
+	}
+	b, _ := json.Marshal(resp.PromptFeedback)
 	return string(b)
 }
 
@@ -244,14 +258,10 @@ func extractTextFromResponse(resp *gemini.GenerateContentResponse) string {
 }
 
 func buildConvoAllV1Prompt(conversationText string) (string, error) {
-	// Preferred source of truth is the TS prompt file (agent-readable).
-	// For packaged binaries, we fall back to an embedded string.
-	promptTemplate, err := loadPromptBodyFromRepo("ts/eve/prompts/analysis/convo-all-v1.prompt.md")
+	promptTemplate, err := getConvoAllV1PromptBody()
 	if err != nil {
-		// Fallback: keep behavior working even if repo files aren't present.
-		promptTemplate = convoAllV1FallbackBody
+		return "", err
 	}
-
 	// The prompt uses a triple-brace variable for raw insertion.
 	return strings.ReplaceAll(promptTemplate, "{{{conversation_text}}}", conversationText), nil
 }
@@ -275,6 +285,28 @@ Guidelines
 Conversation chunk:
 {{{conversation_text}}}
 `
+
+var (
+	convoAllV1PromptOnce sync.Once
+	convoAllV1PromptBody string
+	convoAllV1PromptErr  error
+)
+
+func getConvoAllV1PromptBody() (string, error) {
+	convoAllV1PromptOnce.Do(func() {
+		// Preferred source of truth is the TS prompt file (agent-readable).
+		// For packaged binaries, we fall back to an embedded string.
+		body, err := loadPromptBodyFromRepo("ts/eve/prompts/analysis/convo-all-v1.prompt.md")
+		if err != nil {
+			convoAllV1PromptBody = convoAllV1FallbackBody
+			convoAllV1PromptErr = nil
+			return
+		}
+		convoAllV1PromptBody = body
+		convoAllV1PromptErr = nil
+	})
+	return convoAllV1PromptBody, convoAllV1PromptErr
+}
 
 // convoAllV1ResponseSchema is a Gemini "Schema" (not full JSON Schema).
 // It intentionally avoids unsupported JSON Schema fields like additionalProperties.
