@@ -335,8 +335,27 @@ func main() {
 			})
 			dbWriter.Start()
 			defer dbWriter.Close()
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, nil, dbWriter))
-			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.EmbedModel, dbWriter))
+
+			// Adaptive in-flight controller: prevents melting bad Wi-Fi/routers by dialing down on 429/timeouts/net resets.
+			sem := engine.NewAdaptiveSemaphore(engineCfg.WorkerCount)
+			ctrl := engine.NewAdaptiveController(sem, engine.DefaultAdaptiveControllerConfig(engineCfg.WorkerCount))
+			ctrl.Start(ctx)
+
+			wrap := func(base engine.JobHandler) engine.JobHandler {
+				return func(ctx context.Context, job *queue.Job) error {
+					if err := sem.Acquire(ctx); err != nil {
+						return err
+					}
+					start := time.Now()
+					err := base(ctx, job)
+					ctrl.Observe(time.Since(start), err)
+					sem.Release()
+					return err
+				}
+			}
+
+			eng.RegisterHandler("analysis", wrap(engine.NewAnalysisJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.AnalysisModel, nil, dbWriter)))
+			eng.RegisterHandler("embedding", wrap(engine.NewEmbeddingJobHandlerWithPipeline(warehouseDB, geminiClient, cfg.EmbedModel, dbWriter)))
 
 			// Run engine
 			startTime := time.Now()
@@ -363,6 +382,7 @@ func main() {
 				"workers":   engineCfg.WorkerCount,
 				"analysis_model": cfg.AnalysisModel,
 				"embed_model": cfg.EmbedModel,
+				"adaptive_controller": json.RawMessage(ctrl.SnapshotJSON()),
 			}
 			return printJSON(output)
 		},
