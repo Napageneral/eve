@@ -55,6 +55,25 @@ eve compute status
 eve compute run --workers 10
 ```
 
+#### Gemini quota / rate limits
+
+Eve will **smooth** outbound Gemini traffic to avoid spiky bursts (which can cause 429s and even flaky home routers/Wi‑Fi to fall over).
+
+Set these environment variables to match your Gemini quota tier:
+
+- `GEMINI_API_KEY`: required
+- `EVE_GEMINI_ANALYSIS_RPM`: max analysis requests per minute (default: `1000`)
+- `EVE_GEMINI_EMBED_RPM`: max embedding requests per minute (default: `1000`)
+
+Example (Tier 3-ish defaults you mentioned):
+
+```bash
+export EVE_GEMINI_ANALYSIS_RPM=20000
+export EVE_GEMINI_EMBED_RPM=20000
+```
+
+In addition, `eve compute run` has an **adaptive in-flight controller** that automatically backs off when it sees 429s/timeouts/connection resets, and ramps back up when stable.
+
 ### View paths
 
 ```bash
