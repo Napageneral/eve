@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 )
 
 // Config holds the Eve application configuration
@@ -16,14 +15,6 @@ type Config struct {
 	ConfigPath    string
 	GeminiAPIKey  string
 	AnalysisModel string
-	// AnalysisThinkingLevel configures Gemini 3 "thinking_level" (e.g. minimal/low/high).
-	// Leave empty to use provider defaults.
-	AnalysisThinkingLevel string
-	// AnalysisMaxMessages limits how many messages are included in a conversation analysis prompt
-	// (keeps the most recent N). 0 means no limit.
-	AnalysisMaxMessages int
-	// AnalysisMaxOutputTokens caps analysis output length (0 means provider default).
-	AnalysisMaxOutputTokens int
 	EmbedModel    string
 }
 
@@ -31,9 +22,6 @@ type Config struct {
 type FileConfig struct {
 	GeminiAPIKey  string `json:"gemini_api_key,omitempty"`
 	AnalysisModel string `json:"analysis_model,omitempty"`
-	AnalysisThinkingLevel string `json:"analysis_thinking_level,omitempty"`
-	AnalysisMaxMessages int `json:"analysis_max_messages,omitempty"`
-	AnalysisMaxOutputTokens int `json:"analysis_max_output_tokens,omitempty"`
 	EmbedModel    string `json:"embed_model,omitempty"`
 }
 
@@ -69,12 +57,8 @@ func Load() *Config {
 	// NOTE: Model IDs must match Google Gemini API v1beta ListModels output.
 	// You can always override these with:
 	// - EVE_GEMINI_ANALYSIS_MODEL
-	// - EVE_GEMINI_ANALYSIS_THINKING_LEVEL
 	// - EVE_GEMINI_EMBED_MODEL
 	analysisModel := "gemini-3-flash-preview"
-	analysisThinkingLevel := ""
-	analysisMaxMessages := 40
-	analysisMaxOutputTokens := 256
 	embedModel := "gemini-embedding-001"
 	geminiAPIKey := ""
 
@@ -83,15 +67,6 @@ func Load() *Config {
 	if fileCfg != nil {
 		if fileCfg.AnalysisModel != "" {
 			analysisModel = fileCfg.AnalysisModel
-		}
-		if fileCfg.AnalysisThinkingLevel != "" {
-			analysisThinkingLevel = fileCfg.AnalysisThinkingLevel
-		}
-		if fileCfg.AnalysisMaxMessages > 0 {
-			analysisMaxMessages = fileCfg.AnalysisMaxMessages
-		}
-		if fileCfg.AnalysisMaxOutputTokens > 0 {
-			analysisMaxOutputTokens = fileCfg.AnalysisMaxOutputTokens
 		}
 		if fileCfg.EmbedModel != "" {
 			embedModel = fileCfg.EmbedModel
@@ -108,19 +83,6 @@ func Load() *Config {
 	if envModel := os.Getenv("EVE_GEMINI_ANALYSIS_MODEL"); envModel != "" {
 		analysisModel = envModel
 	}
-	if envThinking := os.Getenv("EVE_GEMINI_ANALYSIS_THINKING_LEVEL"); envThinking != "" {
-		analysisThinkingLevel = envThinking
-	}
-	if envMaxMsgs := os.Getenv("EVE_ANALYSIS_MAX_MESSAGES"); envMaxMsgs != "" {
-		if v, err := strconv.Atoi(envMaxMsgs); err == nil {
-			analysisMaxMessages = v
-		}
-	}
-	if envMaxOut := os.Getenv("EVE_ANALYSIS_MAX_OUTPUT_TOKENS"); envMaxOut != "" {
-		if v, err := strconv.Atoi(envMaxOut); err == nil {
-			analysisMaxOutputTokens = v
-		}
-	}
 	if envEmbed := os.Getenv("EVE_GEMINI_EMBED_MODEL"); envEmbed != "" {
 		embedModel = envEmbed
 	}
@@ -132,9 +94,6 @@ func Load() *Config {
 		ConfigPath:    configPath,
 		GeminiAPIKey:  geminiAPIKey,
 		AnalysisModel: analysisModel,
-		AnalysisThinkingLevel: analysisThinkingLevel,
-		AnalysisMaxMessages: analysisMaxMessages,
-		AnalysisMaxOutputTokens: analysisMaxOutputTokens,
 		EmbedModel:    embedModel,
 	}
 

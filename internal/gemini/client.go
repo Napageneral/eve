@@ -17,8 +17,8 @@ const (
 	initialBackoff      = 500 * time.Millisecond
 	maxBackoff          = 30 * time.Second
 	defaultTimeout      = 60 * time.Second
-	maxIdleConns        = 100
-	maxConnsPerHost     = 200
+	maxIdleConns        = 1000
+	maxConnsPerHost     = 1000
 	idleConnTimeout     = 90 * time.Second
 	tlsHandshakeTimeout = 10 * time.Second
 )
@@ -54,20 +54,27 @@ func NewClient(apiKey string) *Client {
 // GenerateContentRequest represents the request for generateContent API
 type GenerateContentRequest struct {
 	Contents []Content `json:"contents"`
-	// GenerationConfig is optional and supports Gemini 3 "thinking_level", etc.
 	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
+	SafetySettings   []SafetySetting   `json:"safetySettings,omitempty"`
 }
 
 // GenerationConfig configures generation behavior.
 // See: https://ai.google.dev/gemini-api/docs/gemini-3
 type GenerationConfig struct {
 	ThinkingConfig *ThinkingConfig `json:"thinkingConfig,omitempty"`
-	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+	ResponseMimeType string `json:"responseMimeType,omitempty"`
+	ResponseSchema   any    `json:"responseSchema,omitempty"`
 }
 
 // ThinkingConfig configures Gemini 3 thinking.
 type ThinkingConfig struct {
 	ThinkingLevel string `json:"thinkingLevel,omitempty"` // minimal|low|medium|high (varies by model)
+}
+
+// SafetySetting configures per-category safety thresholds.
+type SafetySetting struct {
+	Category  string `json:"category"`
+	Threshold string `json:"threshold"`
 }
 
 // Content represents a message in the conversation

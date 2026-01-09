@@ -44,7 +44,8 @@ func setupAnalysisTestDB(t *testing.T) (*sql.DB, func()) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			chat_id INTEGER NOT NULL,
 			start_time TIMESTAMP NOT NULL,
-			end_time TIMESTAMP NOT NULL
+			end_time TIMESTAMP NOT NULL,
+			summary TEXT
 		);
 
 		CREATE TABLE messages (
@@ -95,6 +96,42 @@ func setupAnalysisTestDB(t *testing.T) (*sql.DB, func()) {
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(conversation_id, prompt_template_id)
 		);
+
+		CREATE TABLE entities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			contact_id INTEGER,
+			title TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE topics (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			contact_id INTEGER,
+			title TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE emotions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			contact_id INTEGER,
+			emotion_type TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE humor_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			contact_id INTEGER,
+			snippet TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
 	`
 
 	_, err = db.Exec(schema)
@@ -114,12 +151,19 @@ func setupAnalysisTestDB(t *testing.T) (*sql.DB, func()) {
 func newTestGeminiClient(t *testing.T) (*gemini.Client, *httptest.Server) {
 	fakeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return a fake successful response
+		// NOTE: Must be valid JSON per convo-all-v1 schema (summary, entities, topics, emotions, humor).
 		response := gemini.GenerateContentResponse{
 			Candidates: []gemini.Candidate{
 				{
 					Content: gemini.Content{
 						Parts: []gemini.Part{
-							{Text: "Test analysis: Topics include lunch plans. Tone is casual."},
+							{Text: `{
+  "summary": "Two friends coordinate lunch plans.",
+  "entities": [{"participant_name": "Alice", "entities": [{"name": "pizza"}]}],
+  "topics": [{"participant_name": "Alice", "topics": [{"name": "lunch"}]}],
+  "emotions": [{"participant_name": "Bob", "emotions": [{"name": "excited"}]}],
+  "humor": [{"participant_name": "Bob", "humor": [{"message": "lol"}]}]
+}`},
 						},
 					},
 				},
@@ -181,7 +225,7 @@ func TestAnalysisJobHandler_EndToEnd(t *testing.T) {
 	defer fakeServer.Close()
 
 	// Create analysis job handler
-		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash", "", 0, 0)
+	handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash")
 
 	// Create job
 	payload := AnalysisJobPayload{
@@ -255,9 +299,36 @@ func TestAnalysisJobHandler_EndToEnd(t *testing.T) {
 	}
 	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
 		text := result.Candidates[0].Content.Parts[0].Text
-		if !strings.Contains(text, "Test analysis") {
-			t.Errorf("Expected 'Test analysis' in result text, got: %s", text)
+		if !strings.Contains(text, "summary") {
+			t.Errorf("Expected JSON-ish output in result text, got: %s", text)
 		}
+	}
+
+	// Verify facets were written
+	var topicsCount, entitiesCount, emotionsCount, humorCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM topics WHERE conversation_id = 1`).Scan(&topicsCount); err != nil {
+		t.Fatalf("Failed to query topics: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM entities WHERE conversation_id = 1`).Scan(&entitiesCount); err != nil {
+		t.Fatalf("Failed to query entities: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM emotions WHERE conversation_id = 1`).Scan(&emotionsCount); err != nil {
+		t.Fatalf("Failed to query emotions: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM humor_items WHERE conversation_id = 1`).Scan(&humorCount); err != nil {
+		t.Fatalf("Failed to query humor_items: %v", err)
+	}
+	if topicsCount == 0 || entitiesCount == 0 || emotionsCount == 0 || humorCount == 0 {
+		t.Errorf("Expected non-zero facet rows, got topics=%d entities=%d emotions=%d humor=%d", topicsCount, entitiesCount, emotionsCount, humorCount)
+	}
+
+	// Verify conversation summary was updated
+	var summary sql.NullString
+	if err := db.QueryRow(`SELECT summary FROM conversations WHERE id = 1`).Scan(&summary); err != nil {
+		t.Fatalf("Failed to query conversation summary: %v", err)
+	}
+	if !summary.Valid || summary.String == "" {
+		t.Errorf("Expected non-empty conversation summary")
 	}
 }
 
@@ -266,7 +337,7 @@ func TestAnalysisJobHandler_InvalidPayload(t *testing.T) {
 	defer cleanup()
 
 	client := gemini.NewClient("fake-api-key")
-		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash", "", 0, 0)
+	handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash")
 
 	job := &queue.Job{
 		ID:          "test-job-1",
@@ -287,7 +358,7 @@ func TestAnalysisJobHandler_ConversationNotFound(t *testing.T) {
 	defer cleanup()
 
 	client := gemini.NewClient("fake-api-key")
-		handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash", "", 0, 0)
+	handler := NewAnalysisJobHandler(db, client, "gemini-2.5-flash")
 
 	payload := AnalysisJobPayload{
 		ConversationID: 999, // doesn't exist
@@ -338,7 +409,10 @@ func TestExtractTextFromResponse_Empty(t *testing.T) {
 
 func TestBuildAnalysisPrompt(t *testing.T) {
 	convoText := "Alice: Hello\nBob: Hi there"
-	prompt := buildAnalysisPrompt(convoText)
+	prompt, err := buildConvoAllV1Prompt(convoText)
+	if err != nil {
+		t.Fatalf("buildConvoAllV1Prompt failed: %v", err)
+	}
 
 	if prompt == "" {
 		t.Error("Expected non-empty prompt")

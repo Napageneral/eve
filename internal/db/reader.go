@@ -52,7 +52,10 @@ func (r *ConversationReader) getMessages(conversationID int) ([]encoding.Message
 		SELECT
 			m.id, m.guid, m.timestamp, m.sender_id, m.content, m.is_from_me,
 			m.conversation_id, m.chat_id,
-			COALESCE(c.name, c.nickname, '') as sender_name
+			CASE
+				WHEN m.is_from_me = 1 THEN 'Me'
+				ELSE COALESCE(c.name, c.nickname, '')
+			END as sender_name
 		FROM messages m
 		LEFT JOIN contacts c ON m.sender_id = c.id
 		WHERE m.conversation_id = ?
@@ -100,24 +103,34 @@ func (r *ConversationReader) getMessages(conversationID int) ([]encoding.Message
 			msg.Content = content.String
 		}
 
-		// Get attachments for this message
-		attachments, err := r.getAttachments(msg.ID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get attachments for message %d: %w", msg.ID, err)
-		}
-		msg.Attachments = attachments
-
-		// Get reactions for this message
-		reactions, err := r.getReactions(msg.GUID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get reactions for message %s: %w", msg.GUID, err)
-		}
-		msg.Reactions = reactions
-
 		messages = append(messages, msg)
 	}
 
-	return messages, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(messages) == 0 {
+		return messages, nil
+	}
+
+	// Batch-load attachments and reactions for the entire conversation.
+	attachmentsByMsgID, err := r.getAttachmentsForConversation(conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get attachments for conversation %d: %w", conversationID, err)
+	}
+	reactionsByGUID, err := r.getReactionsForConversation(conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get reactions for conversation %d: %w", conversationID, err)
+	}
+
+	for i := range messages {
+		msgID := messages[i].ID
+		messages[i].Attachments = attachmentsByMsgID[msgID]
+		messages[i].Reactions = reactionsByGUID[messages[i].GUID]
+	}
+
+	return messages, nil
 }
 
 // getAttachments retrieves all attachments for a message
@@ -202,6 +215,77 @@ func (r *ConversationReader) getReactions(messageGUID string) ([]encoding.Reacti
 	}
 
 	return reactions, rows.Err()
+}
+
+// getAttachmentsForConversation retrieves all attachments for messages in a conversation in one query.
+func (r *ConversationReader) getAttachmentsForConversation(conversationID int) (map[int][]encoding.Attachment, error) {
+	rows, err := r.db.Query(`
+		SELECT a.id, a.message_id, a.mime_type, a.file_name, a.is_sticker
+		FROM attachments a
+		JOIN messages m ON m.id = a.message_id
+		WHERE m.conversation_id = ?
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int][]encoding.Attachment)
+	for rows.Next() {
+		var att encoding.Attachment
+		var messageID int
+		var mimeType, fileName sql.NullString
+
+		if err := rows.Scan(&att.ID, &messageID, &mimeType, &fileName, &att.IsSticker); err != nil {
+			return nil, err
+		}
+		if mimeType.Valid {
+			att.MimeType = mimeType.String
+		}
+		if fileName.Valid {
+			att.FileName = fileName.String
+		}
+
+		out[messageID] = append(out[messageID], att)
+	}
+	return out, rows.Err()
+}
+
+// getReactionsForConversation retrieves all reactions for messages in a conversation in one query.
+func (r *ConversationReader) getReactionsForConversation(conversationID int) (map[string][]encoding.Reaction, error) {
+	rows, err := r.db.Query(`
+		SELECT
+			r.original_message_guid, r.reaction_type, r.sender_id, r.is_from_me,
+			COALESCE(c.name, c.nickname, '') as sender_name
+		FROM reactions r
+		JOIN messages m ON m.guid = r.original_message_guid
+		LEFT JOIN contacts c ON r.sender_id = c.id
+		WHERE m.conversation_id = ?
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string][]encoding.Reaction)
+	for rows.Next() {
+		var guid string
+		var react encoding.Reaction
+		var senderID sql.NullInt64
+		var isFromMe sql.NullBool
+
+		if err := rows.Scan(&guid, &react.ReactionType, &senderID, &isFromMe, &react.SenderName); err != nil {
+			return nil, err
+		}
+		if senderID.Valid {
+			react.SenderID = int(senderID.Int64)
+		}
+		if isFromMe.Valid {
+			react.IsFromMe = isFromMe.Bool
+		}
+		out[guid] = append(out[guid], react)
+	}
+	return out, rows.Err()
 }
 
 // parseTimestamp parses SQLite timestamp formats

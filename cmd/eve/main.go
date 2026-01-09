@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -280,14 +279,7 @@ func main() {
 
 			// Register job handlers
 			eng.RegisterHandler("fake", engine.FakeJobHandler)
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(
-				warehouseDB,
-				geminiClient,
-				cfg.AnalysisModel,
-				cfg.AnalysisThinkingLevel,
-				cfg.AnalysisMaxMessages,
-				cfg.AnalysisMaxOutputTokens,
-			))
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient, cfg.AnalysisModel))
 			eng.RegisterHandler("embedding", engine.NewEmbeddingJobHandler(warehouseDB, geminiClient, cfg.EmbedModel))
 
 			// Setup context with cancellation
@@ -325,11 +317,6 @@ func main() {
 				throughput = float64(stats.Succeeded) / duration.Seconds()
 			}
 
-			effectiveThinking := cfg.AnalysisThinkingLevel
-			if effectiveThinking == "" && strings.HasPrefix(cfg.AnalysisModel, "gemini-3-flash") {
-				effectiveThinking = "minimal"
-			}
-
 			// Output stats
 			output := map[string]interface{}{
 				"ok":        true,
@@ -340,10 +327,6 @@ func main() {
 				"throughput_jobs_per_s": throughput,
 				"workers":   engineCfg.WorkerCount,
 				"analysis_model": cfg.AnalysisModel,
-				"analysis_thinking_level": cfg.AnalysisThinkingLevel,
-				"analysis_thinking_level_effective": effectiveThinking,
-				"analysis_max_messages": cfg.AnalysisMaxMessages,
-				"analysis_max_output_tokens": cfg.AnalysisMaxOutputTokens,
 				"embed_model": cfg.EmbedModel,
 			}
 			return printJSON(output)
@@ -353,8 +336,202 @@ func main() {
 	computeRunCmd.Flags().IntVar(&runWorkerCount, "workers", 0, "Number of concurrent workers (default: 10)")
 	computeRunCmd.Flags().IntVar(&runTimeout, "timeout", 0, "Timeout in seconds (0 = no timeout)")
 
+	// Compute test: run convo-all-v1 against all Casey conversations and report facet counts.
+	var caseyWorkers int
+	computeTestCaseyCmd := &cobra.Command{
+		Use:   "test-casey-convo-all",
+		Short: "Run convo-all-v1 analysis for all Casey Adams conversations and output aggregate facet counts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+			if cfg.GeminiAPIKey == "" {
+				return printErrorJSON(fmt.Errorf("GEMINI_API_KEY is required"))
+			}
+
+			// Open warehouse DB (read conversation IDs + write facets)
+			warehouseDB, err := sql.Open("sqlite3", cfg.EveDBPath+"?_journal_mode=WAL&_busy_timeout=5000")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open warehouse database: %w", err))
+			}
+			defer warehouseDB.Close()
+
+			// Resolve Casey contact_id
+			var caseyContactID int
+			err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name = 'Casey Adams' LIMIT 1`).Scan(&caseyContactID)
+			if err == sql.ErrNoRows {
+				err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name LIKE '%Casey Adams%' LIMIT 1`).Scan(&caseyContactID)
+			}
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to resolve Casey contact id: %w", err))
+			}
+
+			// Find the one-on-one chat with Casey by inbound volume from that contact.
+			var caseyChatID int
+			err = warehouseDB.QueryRow(`
+				SELECT chat_id
+				FROM messages
+				WHERE sender_id = ?
+				GROUP BY chat_id
+				ORDER BY COUNT(*) DESC
+				LIMIT 1
+			`, caseyContactID).Scan(&caseyChatID)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to resolve Casey chat id: %w", err))
+			}
+
+			// Load all conversation IDs for that chat.
+			rows, err := warehouseDB.Query(`SELECT id FROM conversations WHERE chat_id = ? ORDER BY id`, caseyChatID)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to read conversations for chat %d: %w", caseyChatID, err))
+			}
+			var conversationIDs []int
+			for rows.Next() {
+				var id int
+				if err := rows.Scan(&id); err != nil {
+					rows.Close()
+					return printErrorJSON(fmt.Errorf("failed to scan conversation id: %w", err))
+				}
+				conversationIDs = append(conversationIDs, id)
+			}
+			rows.Close()
+			if len(conversationIDs) == 0 {
+				return printErrorJSON(fmt.Errorf("no conversations found for Casey chat_id=%d", caseyChatID))
+			}
+
+			// Reset prior facet rows for this chat so counts reflect this run.
+			tx, err := warehouseDB.Begin()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to begin reset transaction: %w", err))
+			}
+			if _, err := tx.Exec(`DELETE FROM entities WHERE chat_id = ?`, caseyChatID); err != nil {
+				tx.Rollback()
+				return printErrorJSON(fmt.Errorf("failed to clear entities: %w", err))
+			}
+			if _, err := tx.Exec(`DELETE FROM topics WHERE chat_id = ?`, caseyChatID); err != nil {
+				tx.Rollback()
+				return printErrorJSON(fmt.Errorf("failed to clear topics: %w", err))
+			}
+			if _, err := tx.Exec(`DELETE FROM emotions WHERE chat_id = ?`, caseyChatID); err != nil {
+				tx.Rollback()
+				return printErrorJSON(fmt.Errorf("failed to clear emotions: %w", err))
+			}
+			if _, err := tx.Exec(`DELETE FROM humor_items WHERE chat_id = ?`, caseyChatID); err != nil {
+				tx.Rollback()
+				return printErrorJSON(fmt.Errorf("failed to clear humor_items: %w", err))
+			}
+			if err := tx.Commit(); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to commit reset transaction: %w", err))
+			}
+
+			// Use an ephemeral queue DB so this test is repeatable and doesn't touch the main queue.
+			tmp, err := os.CreateTemp("", "eve-queue-casey-*.db")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to create temp queue db: %w", err))
+			}
+			tmpPath := tmp.Name()
+			tmp.Close()
+			defer os.Remove(tmpPath)
+
+			if err := migrate.MigrateQueue(tmpPath); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to migrate temp queue db: %w", err))
+			}
+
+			queueDB, err := sql.Open("sqlite3", tmpPath+"?_journal_mode=WAL&_busy_timeout=5000")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open temp queue db: %w", err))
+			}
+			defer queueDB.Close()
+			queueDB.SetMaxOpenConns(25)
+			queueDB.SetMaxIdleConns(10)
+
+			q := queue.New(queueDB)
+
+			// Enqueue analysis jobs (convo-all-v1) for every conversation in the Casey chat.
+			enqueued := 0
+			for _, convID := range conversationIDs {
+				err := q.Enqueue(queue.EnqueueOptions{
+					Type: "analysis",
+					Key:  fmt.Sprintf("analysis:conversation:%d:convo-all-v1", convID),
+					Payload: engine.AnalysisJobPayload{
+						ConversationID: convID,
+						EvePromptID:    "convo-all-v1",
+					},
+					MaxAttempts: 3,
+				})
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to enqueue conversation %d: %w", convID, err))
+				}
+				enqueued++
+			}
+
+			// Run compute engine (analysis only)
+			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
+			engineCfg := engine.DefaultConfig()
+			if caseyWorkers > 0 {
+				engineCfg.WorkerCount = caseyWorkers
+			}
+			engineCfg.LeaseOwner = fmt.Sprintf("casey-test-%d", time.Now().UnixNano())
+
+			eng := engine.New(q, engineCfg)
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient, cfg.AnalysisModel))
+
+			startTime := time.Now()
+			stats, err := eng.Run(context.Background())
+			duration := time.Since(startTime)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("compute run failed: %w", err))
+			}
+
+			throughput := 0.0
+			if duration.Seconds() > 0 {
+				throughput = float64(stats.Succeeded) / duration.Seconds()
+			}
+
+			// Aggregate facet counts (no message text).
+			var topicsTotal, entitiesTotal, emotionsTotal, humorTotal int
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM topics WHERE chat_id = ?`, caseyChatID).Scan(&topicsTotal); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count topics: %w", err))
+			}
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM entities WHERE chat_id = ?`, caseyChatID).Scan(&entitiesTotal); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count entities: %w", err))
+			}
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM emotions WHERE chat_id = ?`, caseyChatID).Scan(&emotionsTotal); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count emotions: %w", err))
+			}
+			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM humor_items WHERE chat_id = ?`, caseyChatID).Scan(&humorTotal); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to count humor_items: %w", err))
+			}
+
+			output := map[string]interface{}{
+				"ok": true,
+				"casey_contact_id": caseyContactID,
+				"casey_chat_id": caseyChatID,
+				"conversations_total": len(conversationIDs),
+				"analysis_prompt_id": "convo-all-v1",
+				"analysis_model": cfg.AnalysisModel,
+				"run": map[string]interface{}{
+					"workers": engineCfg.WorkerCount,
+					"duration": duration.Seconds(),
+					"succeeded": stats.Succeeded,
+					"failed": stats.Failed,
+					"skipped": stats.Skipped,
+					"throughput_convos_per_s": throughput,
+					"enqueued": enqueued,
+				},
+				"facets": map[string]interface{}{
+					"topics": topicsTotal,
+					"entities": entitiesTotal,
+					"emotions": emotionsTotal,
+					"humor_items": humorTotal,
+				},
+			}
+			return printJSON(output)
+		},
+	}
+	computeTestCaseyCmd.Flags().IntVar(&caseyWorkers, "workers", 800, "Number of concurrent workers")
+
 	computeCmd.AddCommand(computeStatusCmd)
 	computeCmd.AddCommand(computeRunCmd)
+	computeCmd.AddCommand(computeTestCaseyCmd)
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
