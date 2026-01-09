@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"math/rand"
 	"net/http"
 	"time"
+
+	"github.com/tylerchilds/eve/internal/ratelimit"
 )
 
 const (
@@ -25,8 +28,10 @@ const (
 
 // Client is a Gemini API client with HTTP/2 support and retries
 type Client struct {
-	HttpClient *http.Client // Exported for testing
-	apiKey     string
+	HttpClient      *http.Client // Exported for testing
+	apiKey          string
+	analysisLimiter *ratelimit.LeakyBucket
+	embedLimiter    *ratelimit.LeakyBucket
 }
 
 // NewClient creates a new Gemini client with HTTP/2 pooling and retries
@@ -51,9 +56,27 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
+// SetAnalysisRPM sets a smooth rate limit for GenerateContent requests.
+// rpm<=0 disables rate limiting.
+func (c *Client) SetAnalysisRPM(rpm int) {
+	if c == nil {
+		return
+	}
+	c.analysisLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+}
+
+// SetEmbedRPM sets a smooth rate limit for EmbedContent requests.
+// rpm<=0 disables rate limiting.
+func (c *Client) SetEmbedRPM(rpm int) {
+	if c == nil {
+		return
+	}
+	c.embedLimiter = ratelimit.NewLeakyBucketFromRPM(rpm)
+}
+
 // GenerateContentRequest represents the request for generateContent API
 type GenerateContentRequest struct {
-	Contents []Content `json:"contents"`
+	Contents         []Content         `json:"contents"`
 	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
 	SafetySettings   []SafetySetting   `json:"safetySettings,omitempty"`
 }
@@ -61,9 +84,9 @@ type GenerateContentRequest struct {
 // GenerationConfig configures generation behavior.
 // See: https://ai.google.dev/gemini-api/docs/gemini-3
 type GenerationConfig struct {
-	ThinkingConfig *ThinkingConfig `json:"thinkingConfig,omitempty"`
-	ResponseMimeType string `json:"responseMimeType,omitempty"`
-	ResponseSchema   any    `json:"responseSchema,omitempty"`
+	ThinkingConfig   *ThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseMimeType string          `json:"responseMimeType,omitempty"`
+	ResponseSchema   any             `json:"responseSchema,omitempty"`
 }
 
 // ThinkingConfig configures Gemini 3 thinking.
@@ -90,9 +113,9 @@ type Part struct {
 
 // GenerateContentResponse represents the response from generateContent API
 type GenerateContentResponse struct {
-	Candidates []Candidate `json:"candidates,omitempty"`
+	Candidates     []Candidate     `json:"candidates,omitempty"`
 	PromptFeedback *PromptFeedback `json:"promptFeedback,omitempty"`
-	Error      *APIError   `json:"error,omitempty"`
+	Error          *APIError       `json:"error,omitempty"`
 }
 
 type SafetyRating struct {
@@ -108,8 +131,8 @@ type PromptFeedback struct {
 
 // Candidate represents a generated response candidate
 type Candidate struct {
-	Content       Content `json:"content"`
-	FinishReason  string  `json:"finishReason,omitempty"`
+	Content       Content        `json:"content"`
+	FinishReason  string         `json:"finishReason,omitempty"`
 	SafetyRatings []SafetyRating `json:"safetyRatings,omitempty"`
 }
 
@@ -156,6 +179,10 @@ func (e *APIError) Error() string {
 // GenerateContent calls the Gemini generateContent API for analysis
 // Returns the response or an error with retry logic
 func (c *Client) GenerateContent(model string, req *GenerateContentRequest) (*GenerateContentResponse, error) {
+	return c.GenerateContentWithContext(context.Background(), model, req)
+}
+
+func (c *Client) GenerateContentWithContext(ctx context.Context, model string, req *GenerateContentRequest) (*GenerateContentResponse, error) {
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, c.apiKey)
 
 	body, err := json.Marshal(req)
@@ -165,13 +192,18 @@ func (c *Client) GenerateContent(model string, req *GenerateContentRequest) (*Ge
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if c.analysisLimiter != nil {
+			if err := c.analysisLimiter.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if attempt > 0 {
 			// Calculate exponential backoff with jitter
 			backoff := calculateBackoff(attempt)
 			time.Sleep(backoff)
 		}
 
-		httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -226,6 +258,10 @@ func (c *Client) GenerateContent(model string, req *GenerateContentRequest) (*Ge
 // EmbedContent calls the Gemini embedContent API for embeddings
 // Returns the response or an error with retry logic
 func (c *Client) EmbedContent(req *EmbedContentRequest) (*EmbedContentResponse, error) {
+	return c.EmbedContentWithContext(context.Background(), req)
+}
+
+func (c *Client) EmbedContentWithContext(ctx context.Context, req *EmbedContentRequest) (*EmbedContentResponse, error) {
 	url := fmt.Sprintf("%s/models/%s:embedContent?key=%s", baseURL, req.Model, c.apiKey)
 
 	body, err := json.Marshal(req)
@@ -235,13 +271,18 @@ func (c *Client) EmbedContent(req *EmbedContentRequest) (*EmbedContentResponse, 
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if c.embedLimiter != nil {
+			if err := c.embedLimiter.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if attempt > 0 {
 			// Calculate exponential backoff with jitter
 			backoff := calculateBackoff(attempt)
 			time.Sleep(backoff)
 		}
 
-		httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -296,6 +337,10 @@ func (c *Client) EmbedContent(req *EmbedContentRequest) (*EmbedContentResponse, 
 // BatchEmbedContents calls the Gemini batchEmbedContents API for batch embeddings
 // Returns the response or an error with retry logic
 func (c *Client) BatchEmbedContents(model string, requests []EmbedContentRequest) (*BatchEmbedContentsResponse, error) {
+	return c.BatchEmbedContentsWithContext(context.Background(), model, requests)
+}
+
+func (c *Client) BatchEmbedContentsWithContext(ctx context.Context, model string, requests []EmbedContentRequest) (*BatchEmbedContentsResponse, error) {
 	url := fmt.Sprintf("%s/models/%s:batchEmbedContents?key=%s", baseURL, model, c.apiKey)
 
 	// Set model in each request
@@ -314,13 +359,18 @@ func (c *Client) BatchEmbedContents(model string, requests []EmbedContentRequest
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if c.embedLimiter != nil {
+			if err := c.embedLimiter.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if attempt > 0 {
 			// Calculate exponential backoff with jitter
 			backoff := calculateBackoff(attempt)
 			time.Sleep(backoff)
 		}
 
-		httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}

@@ -60,25 +60,25 @@ func NewAnalysisJobHandlerWithPipeline(warehouseDB *sql.DB, geminiClient *gemini
 func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) error {
 	overallStart := time.Now()
 	var (
-		dbReadDur  time.Duration
-		encodeDur  time.Duration
-		promptDur  time.Duration
-		apiDur     time.Duration
-		parseDur   time.Duration
-		dbWriteDur time.Duration
-		outcome    = "error"
+		dbReadDur     time.Duration
+		encodeDur     time.Duration
+		promptDur     time.Duration
+		apiDur        time.Duration
+		parseDur      time.Duration
+		dbWriteDur    time.Duration
+		outcome       = "error"
 		blockedReason string
 	)
 	defer func() {
 		h.metrics.Record(AnalysisMetricEvent{
-			DBRead:  dbReadDur,
-			Encode:  encodeDur,
-			Prompt:  promptDur,
-			APICall: apiDur,
-			Parse:   parseDur,
-			DBWrite: dbWriteDur,
-			Overall: time.Since(overallStart),
-			Outcome: outcome,
+			DBRead:        dbReadDur,
+			Encode:        encodeDur,
+			Prompt:        promptDur,
+			APICall:       apiDur,
+			Parse:         parseDur,
+			DBWrite:       dbWriteDur,
+			Overall:       time.Since(overallStart),
+			Outcome:       outcome,
 			BlockedReason: blockedReason,
 		})
 	}()
@@ -149,7 +149,7 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 
 	// Call Gemini for analysis
 	t3 := time.Now()
-	resp, err := h.geminiClient.GenerateContent(h.model, req)
+	resp, err := h.geminiClient.GenerateContentWithContext(ctx, h.model, req)
 	apiDur = time.Since(t3)
 	if err != nil {
 		return fmt.Errorf("gemini analysis failed: %w", err)
@@ -242,19 +242,19 @@ func summarizePromptFeedback(resp *gemini.GenerateContentResponse) string {
 type convoAllV1Output struct {
 	Summary  string `json:"summary"`
 	Entities []struct {
-		ParticipantName string `json:"participant_name"`
+		ParticipantName string               `json:"participant_name"`
 		Entities        []convoAllV1NameItem `json:"entities"`
 	} `json:"entities"`
 	Topics []struct {
-		ParticipantName string `json:"participant_name"`
+		ParticipantName string               `json:"participant_name"`
 		Topics          []convoAllV1NameItem `json:"topics"`
 	} `json:"topics"`
 	Emotions []struct {
-		ParticipantName string `json:"participant_name"`
+		ParticipantName string               `json:"participant_name"`
 		Emotions        []convoAllV1NameItem `json:"emotions"`
 	} `json:"emotions"`
 	Humor []struct {
-		ParticipantName string `json:"participant_name"`
+		ParticipantName string                `json:"participant_name"`
 		Humor           []convoAllV1HumorItem `json:"humor"`
 	} `json:"humor"`
 }

@@ -33,22 +33,22 @@ type AdaptiveController struct {
 	mu sync.Mutex
 
 	// Window stats (reset every tick)
-	winTotal      int
-	winOK         int
-	winRateLimit  int
-	winNetErr     int
-	winTimeout    int
-	winServerErr  int
-	winOtherErr   int
-	winDurSum     time.Duration
+	winTotal     int
+	winOK        int
+	winRateLimit int
+	winNetErr    int
+	winTimeout   int
+	winServerErr int
+	winOtherErr  int
+	winDurSum    time.Duration
 
 	// Smoothed latency (EWMA) and baseline (min EWMA observed)
 	ewma     time.Duration
 	ewmaBase time.Duration
 
 	// State
-	current int
-	adjusts int
+	current      int
+	adjusts      int
 	lastDecision string
 }
 
@@ -57,7 +57,7 @@ func DefaultAdaptiveControllerConfig(maxInFlight int) AdaptiveControllerConfig {
 		maxInFlight = 1
 	}
 	return AdaptiveControllerConfig{
-		MinInFlight:       8,
+		MinInFlight:       1,
 		MaxInFlight:       maxInFlight,
 		Tick:              1 * time.Second,
 		DecreaseFactor:    0.7,
@@ -144,8 +144,8 @@ func (c *AdaptiveController) SnapshotJSON() json.RawMessage {
 	defer c.mu.Unlock()
 
 	out := map[string]any{
-		"min_in_flight": c.cfg.MinInFlight,
-		"max_in_flight": c.cfg.MaxInFlight,
+		"min_in_flight":           c.cfg.MinInFlight,
+		"max_in_flight":           c.cfg.MaxInFlight,
 		"current_in_flight_limit": c.current,
 		"in_flight_now": func() int {
 			if c.sem == nil {
@@ -153,9 +153,9 @@ func (c *AdaptiveController) SnapshotJSON() json.RawMessage {
 			}
 			return c.sem.InFlight()
 		}(),
-		"adjustments": c.adjusts,
+		"adjustments":   c.adjusts,
 		"last_decision": c.lastDecision,
-		"ewma_ms":  float64(c.ewma.Milliseconds()),
+		"ewma_ms":       float64(c.ewma.Milliseconds()),
 		"ewma_base_ms": func() float64 {
 			if c.ewmaBase <= 0 {
 				return 0
@@ -320,4 +320,3 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
-

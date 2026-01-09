@@ -53,7 +53,7 @@ func NewEmbeddingJobHandlerWithPipeline(warehouseDB *sql.DB, geminiClient *gemin
 			},
 		}
 
-		resp, err := geminiClient.EmbedContent(&req)
+		resp, err := geminiClient.EmbedContentWithContext(ctx, &req)
 		if err != nil {
 			return fmt.Errorf("failed to generate embedding: %w", err)
 		}

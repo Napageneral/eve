@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 )
 
 // Config holds the Eve application configuration
@@ -16,6 +17,8 @@ type Config struct {
 	GeminiAPIKey  string
 	AnalysisModel string
 	EmbedModel    string
+	AnalysisRPM   int
+	EmbedRPM      int
 }
 
 // FileConfig represents the JSON structure of config.json
@@ -23,6 +26,8 @@ type FileConfig struct {
 	GeminiAPIKey  string `json:"gemini_api_key,omitempty"`
 	AnalysisModel string `json:"analysis_model,omitempty"`
 	EmbedModel    string `json:"embed_model,omitempty"`
+	AnalysisRPM   int    `json:"analysis_rpm,omitempty"`
+	EmbedRPM      int    `json:"embed_rpm,omitempty"`
 }
 
 // GetAppDir returns the Eve application directory for the current OS
@@ -61,6 +66,8 @@ func Load() *Config {
 	analysisModel := "gemini-3-flash-preview"
 	embedModel := "gemini-embedding-001"
 	geminiAPIKey := ""
+	analysisRPM := 1000
+	embedRPM := 1000
 
 	// Load from config.json if it exists
 	fileCfg := loadFileConfig(configPath)
@@ -74,6 +81,12 @@ func Load() *Config {
 		if fileCfg.GeminiAPIKey != "" {
 			geminiAPIKey = fileCfg.GeminiAPIKey
 		}
+		if fileCfg.AnalysisRPM > 0 {
+			analysisRPM = fileCfg.AnalysisRPM
+		}
+		if fileCfg.EmbedRPM > 0 {
+			embedRPM = fileCfg.EmbedRPM
+		}
 	}
 
 	// Env vars override everything
@@ -86,6 +99,16 @@ func Load() *Config {
 	if envEmbed := os.Getenv("EVE_GEMINI_EMBED_MODEL"); envEmbed != "" {
 		embedModel = envEmbed
 	}
+	if v := os.Getenv("EVE_GEMINI_ANALYSIS_RPM"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			analysisRPM = n
+		}
+	}
+	if v := os.Getenv("EVE_GEMINI_EMBED_RPM"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			embedRPM = n
+		}
+	}
 
 	cfg := &Config{
 		AppDir:        appDir,
@@ -95,6 +118,8 @@ func Load() *Config {
 		GeminiAPIKey:  geminiAPIKey,
 		AnalysisModel: analysisModel,
 		EmbedModel:    embedModel,
+		AnalysisRPM:   analysisRPM,
+		EmbedRPM:      embedRPM,
 	}
 
 	return cfg

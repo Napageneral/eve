@@ -83,4 +83,3 @@ func (s *AdaptiveSemaphore) notifyLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
 }
-

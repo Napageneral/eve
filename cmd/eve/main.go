@@ -290,6 +290,9 @@ func main() {
 
 			// Create Gemini client
 			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
+			// Smooth RPM limits (tier-appropriate; avoids spiky bursts/429 storms on consumer networks).
+			geminiClient.SetAnalysisRPM(cfg.AnalysisRPM)
+			geminiClient.SetEmbedRPM(cfg.EmbedRPM)
 
 			// Create engine with config
 			engineCfg := engine.DefaultConfig()
@@ -373,16 +376,18 @@ func main() {
 
 			// Output stats
 			output := map[string]interface{}{
-				"ok":        true,
-				"succeeded": stats.Succeeded,
-				"failed":    stats.Failed,
-				"skipped":   stats.Skipped,
-				"duration":  duration.Seconds(),
+				"ok":                    true,
+				"succeeded":             stats.Succeeded,
+				"failed":                stats.Failed,
+				"skipped":               stats.Skipped,
+				"duration":              duration.Seconds(),
 				"throughput_jobs_per_s": throughput,
-				"workers":   engineCfg.WorkerCount,
-				"analysis_model": cfg.AnalysisModel,
-				"embed_model": cfg.EmbedModel,
-				"adaptive_controller": json.RawMessage(ctrl.SnapshotJSON()),
+				"workers":               engineCfg.WorkerCount,
+				"analysis_model":        cfg.AnalysisModel,
+				"embed_model":           cfg.EmbedModel,
+				"analysis_rpm":          cfg.AnalysisRPM,
+				"embed_rpm":             cfg.EmbedRPM,
+				"adaptive_controller":   json.RawMessage(ctrl.SnapshotJSON()),
 			}
 			return printJSON(output)
 		},
@@ -565,6 +570,8 @@ func main() {
 
 			// Run compute engine (analysis only)
 			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
+			geminiClient.SetAnalysisRPM(cfg.AnalysisRPM)
+			geminiClient.SetEmbedRPM(cfg.EmbedRPM)
 			engineCfg := engine.DefaultConfig()
 			if caseyWorkers > 0 {
 				engineCfg.WorkerCount = caseyWorkers
@@ -790,21 +797,22 @@ func main() {
 			brows.Close()
 
 			output := map[string]interface{}{
-				"ok": true,
-				"casey_contact_id": caseyContactID,
-				"casey_chat_id": caseyChatID,
-				"conversations_total": conversationsFoundTotal,
+				"ok":                     true,
+				"casey_contact_id":       caseyContactID,
+				"casey_chat_id":          caseyChatID,
+				"conversations_total":    conversationsFoundTotal,
 				"conversations_selected": len(conversationIDs),
-				"analysis_prompt_id": "convo-all-v1",
-				"analysis_model": cfg.AnalysisModel,
+				"analysis_prompt_id":     "convo-all-v1",
+				"analysis_model":         cfg.AnalysisModel,
+				"analysis_rpm":           cfg.AnalysisRPM,
 				"run": map[string]interface{}{
-					"workers": engineCfg.WorkerCount,
-					"duration": duration.Seconds(),
-					"succeeded": stats.Succeeded,
-					"failed": stats.Failed,
-					"skipped": stats.Skipped,
+					"workers":                 engineCfg.WorkerCount,
+					"duration":                duration.Seconds(),
+					"succeeded":               stats.Succeeded,
+					"failed":                  stats.Failed,
+					"skipped":                 stats.Skipped,
 					"throughput_convos_per_s": throughput,
-					"enqueued": enqueued,
+					"enqueued":                enqueued,
 				},
 				"analysis_status_counts": statusCounts,
 				"blocked_conversations": map[string]interface{}{
@@ -828,9 +836,9 @@ func main() {
 					"dead_last_error_counts": errCounts,
 				},
 				"facets": map[string]interface{}{
-					"topics": topicsTotal,
-					"entities": entitiesTotal,
-					"emotions": emotionsTotal,
+					"topics":      topicsTotal,
+					"entities":    entitiesTotal,
+					"emotions":    emotionsTotal,
 					"humor_items": humorTotal,
 				},
 			}
@@ -971,6 +979,8 @@ func main() {
 			q := queue.New(queueDB)
 
 			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
+			geminiClient.SetAnalysisRPM(cfg.AnalysisRPM) // not used in this command, but keep consistent
+			geminiClient.SetEmbedRPM(cfg.EmbedRPM)
 			engineCfg := engine.DefaultConfig()
 			if caseyEmbedWorkers > 0 {
 				engineCfg.WorkerCount = caseyEmbedWorkers
@@ -1016,15 +1026,15 @@ func main() {
 				}
 
 				return map[string]interface{}{
-					"phase":                    phase,
-					"workers":                  engineCfg.WorkerCount,
-					"duration":                 duration.Seconds(),
-					"succeeded":                stats.Succeeded,
-					"failed":                   stats.Failed,
-					"skipped":                  stats.Skipped,
+					"phase":                       phase,
+					"workers":                     engineCfg.WorkerCount,
+					"duration":                    duration.Seconds(),
+					"succeeded":                   stats.Succeeded,
+					"failed":                      stats.Failed,
+					"skipped":                     stats.Skipped,
 					"throughput_embeddings_per_s": throughput,
-					"enqueued_total":           enqueuedTotal,
-					"enqueued_by_type":         enqueuedByType,
+					"enqueued_total":              enqueuedTotal,
+					"enqueued_by_type":            enqueuedByType,
 				}, nil
 			}
 
@@ -1054,9 +1064,9 @@ func main() {
 				enqueuedFacets := map[string]int{"entity": 0, "topic": 0, "emotion": 0, "humor_item": 0}
 				for _, id := range facet.Entities {
 					if err := q.Enqueue(queue.EnqueueOptions{
-						Type: "embedding",
-						Key:  fmt.Sprintf("embedding:entity:%d:%s", id, cfg.EmbedModel),
-						Payload: engine.EmbeddingJobPayload{EntityType: "entity", EntityID: id},
+						Type:        "embedding",
+						Key:         fmt.Sprintf("embedding:entity:%d:%s", id, cfg.EmbedModel),
+						Payload:     engine.EmbeddingJobPayload{EntityType: "entity", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
 						return nil, fmt.Errorf("failed to enqueue entity embedding %d: %w", id, err)
@@ -1065,9 +1075,9 @@ func main() {
 				}
 				for _, id := range facet.Topics {
 					if err := q.Enqueue(queue.EnqueueOptions{
-						Type: "embedding",
-						Key:  fmt.Sprintf("embedding:topic:%d:%s", id, cfg.EmbedModel),
-						Payload: engine.EmbeddingJobPayload{EntityType: "topic", EntityID: id},
+						Type:        "embedding",
+						Key:         fmt.Sprintf("embedding:topic:%d:%s", id, cfg.EmbedModel),
+						Payload:     engine.EmbeddingJobPayload{EntityType: "topic", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
 						return nil, fmt.Errorf("failed to enqueue topic embedding %d: %w", id, err)
@@ -1076,9 +1086,9 @@ func main() {
 				}
 				for _, id := range facet.Emotions {
 					if err := q.Enqueue(queue.EnqueueOptions{
-						Type: "embedding",
-						Key:  fmt.Sprintf("embedding:emotion:%d:%s", id, cfg.EmbedModel),
-						Payload: engine.EmbeddingJobPayload{EntityType: "emotion", EntityID: id},
+						Type:        "embedding",
+						Key:         fmt.Sprintf("embedding:emotion:%d:%s", id, cfg.EmbedModel),
+						Payload:     engine.EmbeddingJobPayload{EntityType: "emotion", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
 						return nil, fmt.Errorf("failed to enqueue emotion embedding %d: %w", id, err)
@@ -1087,9 +1097,9 @@ func main() {
 				}
 				for _, id := range facet.Humor {
 					if err := q.Enqueue(queue.EnqueueOptions{
-						Type: "embedding",
-						Key:  fmt.Sprintf("embedding:humor_item:%d:%s", id, cfg.EmbedModel),
-						Payload: engine.EmbeddingJobPayload{EntityType: "humor_item", EntityID: id},
+						Type:        "embedding",
+						Key:         fmt.Sprintf("embedding:humor_item:%d:%s", id, cfg.EmbedModel),
+						Payload:     engine.EmbeddingJobPayload{EntityType: "humor_item", EntityID: id},
 						MaxAttempts: 3,
 					}); err != nil {
 						return nil, fmt.Errorf("failed to enqueue humor_item embedding %d: %w", id, err)
@@ -1128,25 +1138,26 @@ func main() {
 			}
 
 			output := map[string]interface{}{
-				"ok": true,
-				"casey_contact_id": caseyContactID,
-				"casey_chat_id": caseyChatID,
-				"embed_model": cfg.EmbedModel,
+				"ok":                  true,
+				"casey_contact_id":    caseyContactID,
+				"casey_chat_id":       caseyChatID,
+				"embed_model":         cfg.EmbedModel,
+				"embed_rpm":           cfg.EmbedRPM,
 				"conversations_total": len(conversationIDs),
 				"facet_rows_total": map[string]int{
-					"entities": len(facet.Entities),
-					"topics": len(facet.Topics),
-					"emotions": len(facet.Emotions),
+					"entities":    len(facet.Entities),
+					"topics":      len(facet.Topics),
+					"emotions":    len(facet.Emotions),
 					"humor_items": len(facet.Humor),
 				},
 				"run_conversations": runConversations,
-				"run_facets": runFacets,
+				"run_facets":        runFacets,
 				"embeddings_present": map[string]int{
 					"conversation": convEmbCount,
-					"entity": entityEmb,
-					"topic": topicEmb,
-					"emotion": emotionEmb,
-					"humor_item": humorEmb,
+					"entity":       entityEmb,
+					"topic":        topicEmb,
+					"emotion":      emotionEmb,
+					"humor_item":   humorEmb,
 				},
 			}
 
