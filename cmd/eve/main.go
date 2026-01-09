@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -338,6 +339,7 @@ func main() {
 
 	// Compute test: run convo-all-v1 against all Casey conversations and report facet counts.
 	var caseyWorkers int
+	var caseyLimit int
 	computeTestCaseyCmd := &cobra.Command{
 		Use:   "test-casey-convo-all",
 		Short: "Run convo-all-v1 analysis for all Casey Adams conversations and output aggregate facet counts",
@@ -396,27 +398,71 @@ func main() {
 			if len(conversationIDs) == 0 {
 				return printErrorJSON(fmt.Errorf("no conversations found for Casey chat_id=%d", caseyChatID))
 			}
+			conversationsFoundTotal := len(conversationIDs)
+			if caseyLimit > 0 && len(conversationIDs) > caseyLimit {
+				conversationIDs = conversationIDs[:caseyLimit]
+			}
 
-			// Reset prior facet rows for this chat so counts reflect this run.
+			// Reset prior analysis/facets so counts reflect this run.
+			// If --limit is used, only reset the selected subset (so we don't wipe the whole chat).
 			tx, err := warehouseDB.Begin()
 			if err != nil {
 				return printErrorJSON(fmt.Errorf("failed to begin reset transaction: %w", err))
 			}
-			if _, err := tx.Exec(`DELETE FROM entities WHERE chat_id = ?`, caseyChatID); err != nil {
-				tx.Rollback()
-				return printErrorJSON(fmt.Errorf("failed to clear entities: %w", err))
-			}
-			if _, err := tx.Exec(`DELETE FROM topics WHERE chat_id = ?`, caseyChatID); err != nil {
-				tx.Rollback()
-				return printErrorJSON(fmt.Errorf("failed to clear topics: %w", err))
-			}
-			if _, err := tx.Exec(`DELETE FROM emotions WHERE chat_id = ?`, caseyChatID); err != nil {
-				tx.Rollback()
-				return printErrorJSON(fmt.Errorf("failed to clear emotions: %w", err))
-			}
-			if _, err := tx.Exec(`DELETE FROM humor_items WHERE chat_id = ?`, caseyChatID); err != nil {
-				tx.Rollback()
-				return printErrorJSON(fmt.Errorf("failed to clear humor_items: %w", err))
+			if caseyLimit > 0 {
+				// Build (?,?,...) IN clause for selected conversation IDs (<= 999).
+				placeholders := make([]string, 0, len(conversationIDs))
+				args := make([]interface{}, 0, len(conversationIDs))
+				for _, id := range conversationIDs {
+					placeholders = append(placeholders, "?")
+					args = append(args, id)
+				}
+				inClause := strings.Join(placeholders, ",")
+
+				// Clear prior convo-all analysis rows for selected conversations.
+				clearAnalysesSQL := fmt.Sprintf(
+					`DELETE FROM conversation_analyses WHERE eve_prompt_id = 'convo-all-v1' AND conversation_id IN (%s)`,
+					inClause,
+				)
+				if _, err := tx.Exec(clearAnalysesSQL, args...); err != nil {
+					tx.Rollback()
+					return printErrorJSON(fmt.Errorf("failed to clear conversation_analyses: %w", err))
+				}
+
+				// Clear facet rows for selected conversations.
+				for _, table := range []string{"entities", "topics", "emotions", "humor_items"} {
+					clearFacetSQL := fmt.Sprintf(`DELETE FROM %s WHERE conversation_id IN (%s)`, table, inClause)
+					if _, err := tx.Exec(clearFacetSQL, args...); err != nil {
+						tx.Rollback()
+						return printErrorJSON(fmt.Errorf("failed to clear %s: %w", table, err))
+					}
+				}
+			} else {
+				// Full chat reset.
+				if _, err := tx.Exec(`
+					DELETE FROM conversation_analyses
+					WHERE eve_prompt_id = 'convo-all-v1'
+					  AND conversation_id IN (SELECT id FROM conversations WHERE chat_id = ?)
+				`, caseyChatID); err != nil {
+					tx.Rollback()
+					return printErrorJSON(fmt.Errorf("failed to clear conversation_analyses: %w", err))
+				}
+				if _, err := tx.Exec(`DELETE FROM entities WHERE chat_id = ?`, caseyChatID); err != nil {
+					tx.Rollback()
+					return printErrorJSON(fmt.Errorf("failed to clear entities: %w", err))
+				}
+				if _, err := tx.Exec(`DELETE FROM topics WHERE chat_id = ?`, caseyChatID); err != nil {
+					tx.Rollback()
+					return printErrorJSON(fmt.Errorf("failed to clear topics: %w", err))
+				}
+				if _, err := tx.Exec(`DELETE FROM emotions WHERE chat_id = ?`, caseyChatID); err != nil {
+					tx.Rollback()
+					return printErrorJSON(fmt.Errorf("failed to clear emotions: %w", err))
+				}
+				if _, err := tx.Exec(`DELETE FROM humor_items WHERE chat_id = ?`, caseyChatID); err != nil {
+					tx.Rollback()
+					return printErrorJSON(fmt.Errorf("failed to clear humor_items: %w", err))
+				}
 			}
 			if err := tx.Commit(); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to commit reset transaction: %w", err))
@@ -471,8 +517,10 @@ func main() {
 			}
 			engineCfg.LeaseOwner = fmt.Sprintf("casey-test-%d", time.Now().UnixNano())
 
+			metrics := engine.NewAnalysisMetrics()
+
 			eng := engine.New(q, engineCfg)
-			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandler(warehouseDB, geminiClient, cfg.AnalysisModel))
+			eng.RegisterHandler("analysis", engine.NewAnalysisJobHandlerWithMetrics(warehouseDB, geminiClient, cfg.AnalysisModel, metrics))
 
 			startTime := time.Now()
 			stats, err := eng.Run(context.Background())
@@ -535,24 +583,153 @@ func main() {
 
 			// Aggregate facet counts (no message text).
 			var topicsTotal, entitiesTotal, emotionsTotal, humorTotal int
-			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM topics WHERE chat_id = ?`, caseyChatID).Scan(&topicsTotal); err != nil {
-				return printErrorJSON(fmt.Errorf("failed to count topics: %w", err))
+			if caseyLimit > 0 {
+				placeholders := make([]string, 0, len(conversationIDs))
+				args := make([]interface{}, 0, len(conversationIDs))
+				for _, id := range conversationIDs {
+					placeholders = append(placeholders, "?")
+					args = append(args, id)
+				}
+				inClause := strings.Join(placeholders, ",")
+				qCount := func(table string) (int, error) {
+					var c int
+					sql := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE conversation_id IN (%s)`, table, inClause)
+					if err := warehouseDB.QueryRow(sql, args...).Scan(&c); err != nil {
+						return 0, err
+					}
+					return c, nil
+				}
+				if v, err := qCount("topics"); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count topics: %w", err))
+				} else {
+					topicsTotal = v
+				}
+				if v, err := qCount("entities"); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count entities: %w", err))
+				} else {
+					entitiesTotal = v
+				}
+				if v, err := qCount("emotions"); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count emotions: %w", err))
+				} else {
+					emotionsTotal = v
+				}
+				if v, err := qCount("humor_items"); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count humor_items: %w", err))
+				} else {
+					humorTotal = v
+				}
+			} else {
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM topics WHERE chat_id = ?`, caseyChatID).Scan(&topicsTotal); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count topics: %w", err))
+				}
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM entities WHERE chat_id = ?`, caseyChatID).Scan(&entitiesTotal); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count entities: %w", err))
+				}
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM emotions WHERE chat_id = ?`, caseyChatID).Scan(&emotionsTotal); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count emotions: %w", err))
+				}
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM humor_items WHERE chat_id = ?`, caseyChatID).Scan(&humorTotal); err != nil {
+					return printErrorJSON(fmt.Errorf("failed to count humor_items: %w", err))
+				}
 			}
-			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM entities WHERE chat_id = ?`, caseyChatID).Scan(&entitiesTotal); err != nil {
-				return printErrorJSON(fmt.Errorf("failed to count entities: %w", err))
+
+			// Count statuses from the warehouse.
+			statusCounts := map[string]int{}
+			var srows *sql.Rows
+			if caseyLimit > 0 {
+				placeholders := make([]string, 0, len(conversationIDs))
+				args := make([]interface{}, 0, len(conversationIDs))
+				for _, id := range conversationIDs {
+					placeholders = append(placeholders, "?")
+					args = append(args, id)
+				}
+				inClause := strings.Join(placeholders, ",")
+				sql := fmt.Sprintf(`
+					SELECT status, COUNT(*) AS c
+					FROM conversation_analyses
+					WHERE eve_prompt_id = 'convo-all-v1'
+					  AND conversation_id IN (%s)
+					GROUP BY status
+				`, inClause)
+				srows, err = warehouseDB.Query(sql, args...)
+			} else {
+				srows, err = warehouseDB.Query(`
+					SELECT status, COUNT(*) AS c
+					FROM conversation_analyses
+					WHERE eve_prompt_id = 'convo-all-v1'
+					  AND conversation_id IN (SELECT id FROM conversations WHERE chat_id = ?)
+					GROUP BY status
+				`, caseyChatID)
 			}
-			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM emotions WHERE chat_id = ?`, caseyChatID).Scan(&emotionsTotal); err != nil {
-				return printErrorJSON(fmt.Errorf("failed to count emotions: %w", err))
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to query analysis status counts: %w", err))
 			}
-			if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM humor_items WHERE chat_id = ?`, caseyChatID).Scan(&humorTotal); err != nil {
-				return printErrorJSON(fmt.Errorf("failed to count humor_items: %w", err))
+			for srows.Next() {
+				var status string
+				var c int
+				if err := srows.Scan(&status, &c); err != nil {
+					srows.Close()
+					return printErrorJSON(fmt.Errorf("failed to scan analysis status: %w", err))
+				}
+				statusCounts[status] = c
 			}
+			srows.Close()
+
+			// List blocked conversations (IDs only).
+			type blockedConvo struct {
+				ConversationID int    `json:"conversation_id"`
+				Reason         string `json:"reason"`
+			}
+			var blocked []blockedConvo
+			var brows *sql.Rows
+			if caseyLimit > 0 {
+				placeholders := make([]string, 0, len(conversationIDs))
+				args := make([]interface{}, 0, len(conversationIDs))
+				for _, id := range conversationIDs {
+					placeholders = append(placeholders, "?")
+					args = append(args, id)
+				}
+				inClause := strings.Join(placeholders, ",")
+				sql := fmt.Sprintf(`
+					SELECT conversation_id, COALESCE(blocked_reason, '')
+					FROM conversation_analyses
+					WHERE eve_prompt_id = 'convo-all-v1'
+					  AND status = 'blocked'
+					  AND conversation_id IN (%s)
+					ORDER BY conversation_id
+				`, inClause)
+				brows, err = warehouseDB.Query(sql, args...)
+			} else {
+				brows, err = warehouseDB.Query(`
+					SELECT conversation_id, COALESCE(blocked_reason, '')
+					FROM conversation_analyses
+					WHERE eve_prompt_id = 'convo-all-v1'
+					  AND status = 'blocked'
+					  AND conversation_id IN (SELECT id FROM conversations WHERE chat_id = ?)
+					ORDER BY conversation_id
+				`, caseyChatID)
+			}
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to query blocked conversations: %w", err))
+			}
+			for brows.Next() {
+				var cid int
+				var reason string
+				if err := brows.Scan(&cid, &reason); err != nil {
+					brows.Close()
+					return printErrorJSON(fmt.Errorf("failed to scan blocked conversation: %w", err))
+				}
+				blocked = append(blocked, blockedConvo{ConversationID: cid, Reason: reason})
+			}
+			brows.Close()
 
 			output := map[string]interface{}{
 				"ok": true,
 				"casey_contact_id": caseyContactID,
 				"casey_chat_id": caseyChatID,
-				"conversations_total": len(conversationIDs),
+				"conversations_total": conversationsFoundTotal,
+				"conversations_selected": len(conversationIDs),
 				"analysis_prompt_id": "convo-all-v1",
 				"analysis_model": cfg.AnalysisModel,
 				"run": map[string]interface{}{
@@ -564,6 +741,17 @@ func main() {
 					"throughput_convos_per_s": throughput,
 					"enqueued": enqueued,
 				},
+				"analysis_status_counts": statusCounts,
+				"blocked_conversations": map[string]interface{}{
+					"count": len(blocked),
+					"sample": func() []blockedConvo {
+						if len(blocked) <= 20 {
+							return blocked
+						}
+						return blocked[:20]
+					}(),
+				},
+				"metrics": json.RawMessage(metrics.SnapshotJSON()),
 				"errors": map[string]interface{}{
 					"dead_jobs": len(deadJobs),
 					"dead_jobs_sample": func() []deadJob {
@@ -585,6 +773,7 @@ func main() {
 		},
 	}
 	computeTestCaseyCmd.Flags().IntVar(&caseyWorkers, "workers", 800, "Number of concurrent workers")
+	computeTestCaseyCmd.Flags().IntVar(&caseyLimit, "limit", 0, "Limit number of conversations analyzed (0 = all)")
 
 	// Compute test: embed Casey conversations + facet rows and report throughput.
 	var caseyEmbedWorkers int
