@@ -850,6 +850,8 @@ func main() {
 
 	// Compute test: embed Casey conversations + facet rows and report throughput.
 	var caseyEmbedWorkers int
+	var caseyEmbedLimitConvos int
+	var caseyEmbedLimitFacets int
 	computeTestCaseyEmbeddingsCmd := &cobra.Command{
 		Use:   "test-casey-embeddings",
 		Short: "Embed all Casey conversations + facet rows (topics/entities/emotions/humor) and output aggregate counts + throughput",
@@ -907,6 +909,9 @@ func main() {
 			if len(conversationIDs) == 0 {
 				return printErrorJSON(fmt.Errorf("no conversations found for Casey chat_id=%d", caseyChatID))
 			}
+			if caseyEmbedLimitConvos > 0 && len(conversationIDs) > caseyEmbedLimitConvos {
+				conversationIDs = conversationIDs[:caseyEmbedLimitConvos]
+			}
 
 			// Load facet IDs (must exist from prior convo-all run).
 			type facetIDs struct {
@@ -937,21 +942,33 @@ func main() {
 			if ids, err := loadIDs(`SELECT id FROM entities WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load entity ids: %w", err))
 			} else {
+				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
+					ids = ids[:caseyEmbedLimitFacets]
+				}
 				facet.Entities = ids
 			}
 			if ids, err := loadIDs(`SELECT id FROM topics WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load topic ids: %w", err))
 			} else {
+				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
+					ids = ids[:caseyEmbedLimitFacets]
+				}
 				facet.Topics = ids
 			}
 			if ids, err := loadIDs(`SELECT id FROM emotions WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load emotion ids: %w", err))
 			} else {
+				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
+					ids = ids[:caseyEmbedLimitFacets]
+				}
 				facet.Emotions = ids
 			}
 			if ids, err := loadIDs(`SELECT id FROM humor_items WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load humor_item ids: %w", err))
 			} else {
+				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
+					ids = ids[:caseyEmbedLimitFacets]
+				}
 				facet.Humor = ids
 			}
 
@@ -1165,6 +1182,8 @@ func main() {
 		},
 	}
 	computeTestCaseyEmbeddingsCmd.Flags().IntVar(&caseyEmbedWorkers, "workers", 800, "Number of concurrent workers")
+	computeTestCaseyEmbeddingsCmd.Flags().IntVar(&caseyEmbedLimitConvos, "limit-conversations", 0, "Limit number of conversations embedded (0 = all)")
+	computeTestCaseyEmbeddingsCmd.Flags().IntVar(&caseyEmbedLimitFacets, "limit-facets", 0, "Limit number of facet rows embedded per type (0 = all)")
 
 	computeCmd.AddCommand(computeStatusCmd)
 	computeCmd.AddCommand(computeRunCmd)
