@@ -135,7 +135,7 @@
         "Unit tests use synthetic eve.db and verify time filtering + token_max stops"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "files": ["internal/contextengine/**", "internal/db/**"],
       "notes": "No vector search required for v1; similarity ordering can be TODO."
     },

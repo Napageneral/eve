@@ -175,3 +175,45 @@ Phase: go-cli-context-engine
   - Future dynamic retrievals (convos_context_data, analyses_context_data) will calculate actual tokens
   - Budget fitting logic (shrink_time, compress_encoding, drop_candidates) deferred to future stories
 - This establishes the foundation for porting TS context engine runtime into Go CLI
+
+### EVGO-024: Go retrieval adapter - convos_context_data (DB-backed) (2026-01-10)
+- Implemented `convosContextDataAdapter` in `convos_adapter.go`:
+  - Retrieves conversation context from eve.db using raw SQL (no ORMs)
+  - Supports chat_ids filtering: directly query conversations from specific chats
+  - Supports contact_ids expansion: expands contact IDs to their associated chat IDs via chat_participants table
+  - Time filtering with presets: "day" (last 1 day), "week" (last 7 days), "month" (last 30 days), "year" (last 365 days), "all" (no time filter)
+  - Time filtering with explicit dates: start_date/end_date as ISO 8601 strings
+  - Ordering support: "timeAsc" (oldest first), "timeDesc" (newest first)
+  - Token budget: token_max parameter stops loading conversations when budget is reached
+  - Uses estimated tokens (length / 4) to track budget during loading
+  - Encodes conversations as "SenderName: message text" format (similar to existing Go encoding)
+  - Returns empty result gracefully when no conversations match filters
+- Parameter parsing utilities:
+  - parseIntSlice: handles []interface{} from JSON unmarshaling (float64, int, string)
+  - parseInt: handles multiple numeric types with default fallback
+  - parseString: handles string params with default fallback
+  - parseTimeParams: extracts time filtering (preset or explicit dates)
+- Database operations:
+  - collectChatIDsFromContacts: expands contact_ids to chat_ids via chat_participants join
+  - filterConversationsByTime: queries conversations table with time + chat_id filters
+  - orderConversations: orders conversation IDs by start_time ASC/DESC
+  - loadAndEncodeConversations: loads messages for each conversation, encodes, respects token budget
+  - loadConversationText: loads and formats messages for a single conversation
+- Comprehensive unit tests in `convos_adapter_test.go`:
+  - setupTestDB: creates synthetic eve.db with handles, contacts, chats, chat_participants, conversations, messages
+  - Test data: Alice (contact 1, chat 1) and Bob (contact 2, chat 2) with conversations at different times (yesterday, last week, last month, last year)
+  - TestConvosAdapter_ChatIDsFilter: verifies chat_ids filtering (Alice only)
+  - TestConvosAdapter_ContactIDsExpansion: verifies contact_ids expansion (Bob -> chat 2)
+  - TestConvosAdapter_TimePresetWeek: verifies "week" preset filters conversations to last 7 days
+  - TestConvosAdapter_TimePresetMonth: verifies "month" preset filters to last 30 days
+  - TestConvosAdapter_OrderTimeDesc: verifies timeDesc ordering (most recent first)
+  - TestConvosAdapter_TokenMax: verifies token budget stops loading when exceeded
+  - TestConvosAdapter_EmptyResult: verifies graceful empty result for non-existent chats
+  - TestConvosAdapter_NoDBPath: verifies error when no database path provided
+- All tests pass with synthetic fixtures (no real user data)
+- Registered adapter in retrievalAdapters registry as "convos_context_data"
+- V1 limitations (deferred to future stories):
+  - No facet filtering (match.entities, match.topics, match.emotions) - tables exist but filtering not implemented
+  - No similarity ordering (simAsc, simDesc) - requires vector embeddings
+  - No encode options (include_sender, include_attachments, include_reactions) - using simple "SenderName: text" format
+- This adapter enables packs like convos-year-full to load dynamic conversation context from the database
