@@ -10,8 +10,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// analysesContextDataAdapter retrieves analysis context (topics, entities, emotions, humor) from the database
-// Supports chat_ids, contact_ids, time filtering, ordering, token budget, include filters
+// analysesContextDataAdapter retrieves analysis context (summaries + facets) from the database
+// Matches TS reference implementation: uses consolidated query, supports facet filtering
 func analysesContextDataAdapter(params map[string]interface{}, context RetrievalContext) (RetrievalResult, error) {
 	// Parse parameters
 	chatIDs := parseIntSlice(params["chat_ids"])
@@ -20,6 +20,7 @@ func analysesContextDataAdapter(params map[string]interface{}, context Retrieval
 	tokenMax := parseInt(params["token_max"], 10000)
 	order := parseString(params["order"], "timeAsc")
 	include := parseIncludeList(params["include"])
+	match := parseMatchParams(params["match"])
 
 	// Open database
 	if context.DBPath == "" {
@@ -42,8 +43,8 @@ func analysesContextDataAdapter(params map[string]interface{}, context Retrieval
 		return RetrievalResult{Text: "", ActualTokens: 0}, nil
 	}
 
-	// Filter conversations by time and chat IDs
-	convIDs, err := filterConversationsByTime(db, allChatIDs, timeParams.StartISO, timeParams.EndISO)
+	// Filter conversations by time, chat IDs, and facets (matching TS reference)
+	convIDs, err := filterConvIDsByFacets(db, allChatIDs, timeParams.StartISO, timeParams.EndISO, match)
 	if err != nil {
 		return RetrievalResult{}, fmt.Errorf("failed to filter conversations: %w", err)
 	}
@@ -58,13 +59,76 @@ func analysesContextDataAdapter(params map[string]interface{}, context Retrieval
 		return RetrievalResult{}, fmt.Errorf("failed to order conversations: %w", err)
 	}
 
-	// Load analysis data for each conversation
-	text, actualTokens, err := loadAndFormatAnalyses(db, convIDs, include, tokenMax)
+	// Map conv -> chat
+	convToChat, err := getConvToChatMap(db, convIDs)
 	if err != nil {
-		return RetrievalResult{}, fmt.Errorf("failed to load analyses: %w", err)
+		return RetrievalResult{}, fmt.Errorf("failed to map conversations to chats: %w", err)
 	}
 
-	return RetrievalResult{Text: text, ActualTokens: actualTokens}, nil
+	// Group conv_ids by chat
+	byChat := make(map[int64][]int64)
+	for _, convID := range convIDs {
+		if chatID, ok := convToChat[convID]; ok {
+			byChat[chatID] = append(byChat[chatID], convID)
+		}
+	}
+
+	// Process each chat and format analyses
+	var outLines []string
+	totalTokens := 0
+
+	for chatID, cids := range byChat {
+		// Get consolidated analysis data (matches TS getChatConsolidatedData)
+		consolidated, err := getChatConsolidatedAnalysisData(db, chatID)
+		if err != nil {
+			return RetrievalResult{}, fmt.Errorf("failed to get consolidated data: %w", err)
+		}
+
+		// Aggregate rows by conversation_id (matches TS bucketing logic)
+		bucket := make(map[int64]*analysisRow)
+		for _, row := range consolidated {
+			entry, exists := bucket[row.ConversationID]
+			if !exists {
+				entry = &analysisRow{
+					ConversationID:      row.ConversationID,
+					ConvStartDate:       row.ConvStartDate,
+					ConversationSummary: row.ConversationSummary,
+					Topics:              []string{},
+					Entities:            []string{},
+					Emotions:            []string{},
+					Humor:               []string{},
+				}
+				bucket[row.ConversationID] = entry
+			}
+
+			// Extend lists if present
+			entry.Topics = append(entry.Topics, row.Topics...)
+			entry.Entities = append(entry.Entities, row.Entities...)
+			entry.Emotions = append(entry.Emotions, row.Emotions...)
+			entry.Humor = append(entry.Humor, row.Humor...)
+		}
+
+		// Format each conversation's analysis
+		for _, convID := range cids {
+			row, ok := bucket[convID]
+			if !ok {
+				continue
+			}
+
+			textBlock := formatAnalysisBlock(*row, include)
+			tokens := len(textBlock) / 4
+
+			if totalTokens+tokens > tokenMax {
+				break
+			}
+
+			outLines = append(outLines, textBlock)
+			totalTokens += tokens
+		}
+	}
+
+	result := strings.Join(outLines, "\n")
+	return RetrievalResult{Text: result, ActualTokens: totalTokens}, nil
 }
 
 // parseIncludeList extracts the include filter list
@@ -107,144 +171,7 @@ type analysisRow struct {
 	Humor               []string
 }
 
-// loadAndFormatAnalyses loads analysis data for conversations and formats them
-func loadAndFormatAnalyses(db *sql.DB, convIDs []int64, include []string, tokenMax int) (string, int, error) {
-	if len(convIDs) == 0 {
-		return "", 0, nil
-	}
-
-	// Load analysis data for all conversations
-	analysisData, err := loadAnalysisData(db, convIDs)
-	if err != nil {
-		return "", 0, err
-	}
-
-	// Format each conversation's analysis
-	var outLines []string
-	totalTokens := 0
-
-	for _, convID := range convIDs {
-		row, ok := analysisData[convID]
-		if !ok {
-			continue
-		}
-
-		textBlock := formatAnalysisBlock(row, include)
-		tokens := len(textBlock) / 4
-
-		if totalTokens+tokens > tokenMax {
-			break
-		}
-
-		outLines = append(outLines, textBlock)
-		totalTokens += tokens
-	}
-
-	result := strings.Join(outLines, "\n")
-	return result, totalTokens, nil
-}
-
-// loadAnalysisData loads all analysis data for the given conversations
-func loadAnalysisData(db *sql.DB, convIDs []int64) (map[int64]analysisRow, error) {
-	result := make(map[int64]analysisRow)
-
-	if len(convIDs) == 0 {
-		return result, nil
-	}
-
-	// Load conversation metadata
-	placeholders := make([]string, len(convIDs))
-	args := make([]interface{}, len(convIDs))
-	for i, id := range convIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(`SELECT id, start_time, summary FROM conversations WHERE id IN (%s)`, strings.Join(placeholders, ", "))
-
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	for rows.Next() {
-		var convID int64
-		var startTime string
-		var summary sql.NullString
-
-		if err := rows.Scan(&convID, &startTime, &summary); err != nil {
-			rows.Close()
-			return nil, err
-		}
-
-		result[convID] = analysisRow{
-			ConversationID:      convID,
-			ConvStartDate:       startTime,
-			ConversationSummary: summary.String,
-			Topics:              []string{},
-			Entities:            []string{},
-			Emotions:            []string{},
-			Humor:               []string{},
-		}
-	}
-	rows.Close()
-
-	// Load facet data
-	loadFacet := func(table, column string, callback func(int64, string)) error {
-		if len(convIDs) == 0 {
-			return nil
-		}
-
-		q := fmt.Sprintf(`SELECT conversation_id, %s FROM %s WHERE conversation_id IN (%s)`, column, table, strings.Join(placeholders, ", "))
-		rows, err := db.Query(q, args...)
-		if err != nil {
-			return nil // Table might not exist
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var convID int64
-			var value sql.NullString
-			if err := rows.Scan(&convID, &value); err != nil {
-				return err
-			}
-			if value.Valid && value.String != "" {
-				callback(convID, value.String)
-			}
-		}
-		return rows.Err()
-	}
-
-	loadFacet("topics", "title", func(convID int64, value string) {
-		if row, ok := result[convID]; ok {
-			row.Topics = append(row.Topics, value)
-			result[convID] = row
-		}
-	})
-
-	loadFacet("entities", "title", func(convID int64, value string) {
-		if row, ok := result[convID]; ok {
-			row.Entities = append(row.Entities, value)
-			result[convID] = row
-		}
-	})
-
-	loadFacet("emotions", "emotion_type", func(convID int64, value string) {
-		if row, ok := result[convID]; ok {
-			row.Emotions = append(row.Emotions, value)
-			result[convID] = row
-		}
-	})
-
-	loadFacet("humor", "description", func(convID int64, value string) {
-		if row, ok := result[convID]; ok {
-			row.Humor = append(row.Humor, value)
-			result[convID] = row
-		}
-	})
-
-	return result, nil
-}
+// Removed old loadAndFormatAnalyses and loadAnalysisData functions (replaced by consolidated query approach)
 
 // formatAnalysisBlock formats a single conversation's analysis
 func formatAnalysisBlock(row analysisRow, include []string) string {
@@ -346,6 +273,41 @@ func parseString(val interface{}, defaultVal string) string {
 		return str
 	}
 	return defaultVal
+}
+
+// parseMatchParams extracts facet filtering parameters
+func parseMatchParams(val interface{}) struct{ Entities, Topics, Emotions []string } {
+	result := struct{ Entities, Topics, Emotions []string }{}
+	if val == nil {
+		return result
+	}
+	matchMap, ok := val.(map[string]interface{})
+	if !ok {
+		return result
+	}
+
+	if entities, ok := matchMap["entities"].([]interface{}); ok {
+		for _, e := range entities {
+			if s, ok := e.(string); ok {
+				result.Entities = append(result.Entities, s)
+			}
+		}
+	}
+	if topics, ok := matchMap["topics"].([]interface{}); ok {
+		for _, t := range topics {
+			if s, ok := t.(string); ok {
+				result.Topics = append(result.Topics, s)
+			}
+		}
+	}
+	if emotions, ok := matchMap["emotions"].([]interface{}); ok {
+		for _, e := range emotions {
+			if s, ok := e.(string); ok {
+				result.Emotions = append(result.Emotions, s)
+			}
+		}
+	}
+	return result
 }
 
 // Database helper functions (simplified versions for analyses adapter)
@@ -492,4 +454,301 @@ func parseTimeParams(timeInterface interface{}) struct{ StartISO, EndISO string 
 	}
 
 	return result
+}
+
+// filterConvIDsByFacets filters conversation IDs by time and facet matches (entities, topics, emotions)
+// Matches TS reference filterConvIdsByFacets exactly
+func filterConvIDsByFacets(db *sql.DB, chatIDs []int64, startISO, endISO string, match struct{ Entities, Topics, Emotions []string }) ([]int64, error) {
+	if len(chatIDs) == 0 {
+		return []int64{}, nil
+	}
+
+	// Build SQL for base conversations in time range
+	placeholders := make([]string, len(chatIDs))
+	args := make([]interface{}, len(chatIDs)+2)
+	for i, chatID := range chatIDs {
+		placeholders[i] = "?"
+		args[i] = chatID
+	}
+	args[len(chatIDs)] = startISO
+	args[len(chatIDs)+1] = endISO
+
+	query := fmt.Sprintf(`
+		SELECT id
+		FROM conversations
+		WHERE chat_id IN (%s)
+			AND datetime(start_time) >= datetime(?)
+			AND datetime(start_time) < datetime(?)
+	`, strings.Join(placeholders, ", "))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query base conversations: %w", err)
+	}
+	defer rows.Close()
+
+	idSet := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan conversation ID: %w", err)
+		}
+		idSet[id] = true
+	}
+
+	if len(idSet) == 0 {
+		return []int64{}, nil
+	}
+
+	// Apply facet filters sequentially (intersection logic)
+	applyFacet := func(table, column string, values []string) error {
+		if len(values) == 0 || len(idSet) == 0 {
+			return nil
+		}
+
+		// Normalize values to lowercase
+		vals := make([]string, 0, len(values))
+		for _, v := range values {
+			v = strings.TrimSpace(strings.ToLower(v))
+			if v != "" {
+				vals = append(vals, v)
+			}
+		}
+		if len(vals) == 0 {
+			return nil
+		}
+
+		// Build query
+		ids := make([]int64, 0, len(idSet))
+		for id := range idSet {
+			ids = append(ids, id)
+		}
+
+		idPlaceholders := make([]string, len(ids))
+		valPlaceholders := make([]string, len(vals))
+		facetArgs := make([]interface{}, 0, len(ids)+len(vals))
+
+		for i, id := range ids {
+			idPlaceholders[i] = "?"
+			facetArgs = append(facetArgs, id)
+		}
+		for i, val := range vals {
+			valPlaceholders[i] = "?"
+			facetArgs = append(facetArgs, val)
+		}
+
+		facetSQL := fmt.Sprintf(`
+			SELECT DISTINCT conversation_id
+			FROM %s
+			WHERE conversation_id IN (%s)
+				AND LOWER(%s) IN (%s)
+		`, table, strings.Join(idPlaceholders, ", "), column, strings.Join(valPlaceholders, ", "))
+
+		facetRows, err := db.Query(facetSQL, facetArgs...)
+		if err != nil {
+			return nil // Table might not exist, treat as no matches
+		}
+		defer facetRows.Close()
+
+		newSet := make(map[int64]bool)
+		for facetRows.Next() {
+			var convID int64
+			if err := facetRows.Scan(&convID); err != nil {
+				return fmt.Errorf("failed to scan facet conversation ID: %w", err)
+			}
+			newSet[convID] = true
+		}
+
+		idSet = newSet
+		return nil
+	}
+
+	// Apply each facet filter (matches TS order)
+	if err := applyFacet("entities", "title", match.Entities); err != nil {
+		return nil, err
+	}
+	if err := applyFacet("topics", "title", match.Topics); err != nil {
+		return nil, err
+	}
+	if err := applyFacet("emotions", "emotion_type", match.Emotions); err != nil {
+		return nil, err
+	}
+
+	// Convert set to slice
+	result := make([]int64, 0, len(idSet))
+	for id := range idSet {
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+// getConvToChatMap maps conversation IDs to their chat IDs
+func getConvToChatMap(db *sql.DB, convIDs []int64) (map[int64]int64, error) {
+	if len(convIDs) == 0 {
+		return make(map[int64]int64), nil
+	}
+
+	placeholders := make([]string, len(convIDs))
+	args := make([]interface{}, len(convIDs))
+	for i, convID := range convIDs {
+		placeholders[i] = "?"
+		args[i] = convID
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, chat_id
+		FROM conversations
+		WHERE id IN (%s)
+	`, strings.Join(placeholders, ", "))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query conv-to-chat mapping: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64]int64)
+	for rows.Next() {
+		var convID, chatID int64
+		if err := rows.Scan(&convID, &chatID); err != nil {
+			return nil, fmt.Errorf("failed to scan mapping: %w", err)
+		}
+		result[convID] = chatID
+	}
+	return result, nil
+}
+
+// consolidatedRow represents a row from the consolidated analysis query
+type consolidatedRow struct {
+	ConversationID      int64
+	ConvStartDate       string
+	ConversationSummary string
+	Topics              []string
+	Entities            []string
+	Emotions            []string
+	Humor               []string
+}
+
+// getChatConsolidatedAnalysisData gets consolidated analysis data for a single chat
+// Matches TS getChatConsolidatedData exactly
+func getChatConsolidatedAnalysisData(db *sql.DB, chatID int64) ([]consolidatedRow, error) {
+	// Query base conversations grouped by (conversation_id, contact_id)
+	conversationsSQL := `
+		SELECT
+			c.id as conversation_id,
+			strftime('%Y-%m-%dT%H:%M:%SZ', c.start_time) as conv_start_date,
+			c.summary as conversation_summary,
+			cont.id as contact_id
+		FROM conversations c
+		LEFT JOIN messages m ON m.conversation_id = c.id
+		LEFT JOIN contacts cont ON cont.id = m.sender_id
+		WHERE c.chat_id = ?
+		GROUP BY c.id, cont.id
+		ORDER BY c.start_time ASC
+	`
+
+	rows, err := db.Query(conversationsSQL, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query conversations: %w", err)
+	}
+	defer rows.Close()
+
+	type convKey struct {
+		convID    int64
+		contactID sql.NullInt64
+	}
+
+	conversations := []struct {
+		key       convKey
+		startDate string
+		summary   sql.NullString
+	}{}
+
+	for rows.Next() {
+		var entry struct {
+			key       convKey
+			startDate string
+			summary   sql.NullString
+		}
+		if err := rows.Scan(&entry.key.convID, &entry.startDate, &entry.summary, &entry.key.contactID); err != nil {
+			return nil, fmt.Errorf("failed to scan conversation: %w", err)
+		}
+		conversations = append(conversations, entry)
+	}
+
+	// Query each facet dimension
+	queryFacet := func(facetSQL string) (map[string][]string, error) {
+		facetRows, err := db.Query(facetSQL, chatID)
+		if err != nil {
+			// Table might not exist, return empty map
+			return make(map[string][]string), nil
+		}
+		defer facetRows.Close()
+
+		grouped := make(map[string][]string)
+		for facetRows.Next() {
+			var convID int64
+			var contactID sql.NullInt64
+			var value string
+
+			if err := facetRows.Scan(&convID, &contactID, &value); err != nil {
+				return nil, fmt.Errorf("failed to scan facet: %w", err)
+			}
+
+			key := fmt.Sprintf("%d_%d", convID, contactID.Int64)
+			if !contactID.Valid {
+				key = fmt.Sprintf("%d_null", convID)
+			}
+			grouped[key] = append(grouped[key], value)
+		}
+		return grouped, nil
+	}
+
+	emotionsMap, err := queryFacet(`SELECT conversation_id, contact_id, emotion_type FROM emotions WHERE chat_id = ?`)
+	if err != nil {
+		return nil, err
+	}
+
+	humorMap, err := queryFacet(`SELECT conversation_id, contact_id, snippet FROM humor_items WHERE chat_id = ?`)
+	if err != nil {
+		return nil, err
+	}
+
+	topicsMap, err := queryFacet(`SELECT conversation_id, contact_id, title FROM topics WHERE chat_id = ?`)
+	if err != nil {
+		return nil, err
+	}
+
+	entitiesMap, err := queryFacet(`SELECT conversation_id, contact_id, title FROM entities WHERE chat_id = ?`)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build final result
+	result := []consolidatedRow{}
+	for _, conv := range conversations {
+		key := fmt.Sprintf("%d_%d", conv.key.convID, conv.key.contactID.Int64)
+		if !conv.key.contactID.Valid {
+			key = fmt.Sprintf("%d_null", conv.key.convID)
+		}
+
+		summary := ""
+		if conv.summary.Valid {
+			summary = conv.summary.String
+		}
+
+		entry := consolidatedRow{
+			ConversationID:      conv.key.convID,
+			ConvStartDate:       conv.startDate,
+			ConversationSummary: summary,
+			Topics:              topicsMap[key],
+			Entities:            entitiesMap[key],
+			Emotions:            emotionsMap[key],
+			Humor:               humorMap[key],
+		}
+
+		result = append(result, entry)
+	}
+
+	return result, nil
 }

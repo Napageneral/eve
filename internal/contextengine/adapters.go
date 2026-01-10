@@ -4,8 +4,9 @@ import "fmt"
 
 // registry of retrieval adapters
 var retrievalAdapters = map[string]RetrievalAdapter{
-	"static_snippet":      staticSnippetAdapter,
-	"convos_context_data": convosContextDataAdapter,
+	"static_snippet":        staticSnippetAdapter,
+	"convos_context_data":   convosContextDataAdapter,
+	"analyses_context_data": analysesContextDataAdapter,
 }
 
 // staticSnippetAdapter returns static text from params.text

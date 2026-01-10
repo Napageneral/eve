@@ -320,3 +320,59 @@ Phase: go-cli-context-engine
   - Skills to ship editable prompt/pack resources
   - Agents to inspect and modify resources without reading Go source code
 - All tests pass
+
+### EVGO-025: Go retrieval adapter - analyses_context_data (DB-backed facets context) (2026-01-10)
+- Completely rewrote `analyses.go` to match TS reference implementation exactly
+- Key architectural changes from incomplete v1:
+  - **Consolidated query approach**: Uses `getChatConsolidatedAnalysisData` that groups facets by (conversation_id, contact_id)
+  - **Facet filtering support**: Implements `filterConvIDsByFacets` for match.entities, match.topics, match.emotions
+  - **Correct humor table**: Uses `humor_items.snippet` instead of incorrect `humor.description`
+  - **Proper aggregation**: Buckets consolidated rows by conversation_id before formatting
+- Implementation details:
+  - `analysesContextDataAdapter`: Main entry point, matches TS retrieveAnalysesContext flow
+  - `filterConvIDsByFacets`: Filters conversations by time + facets with intersection logic (matches TS exactly)
+  - `getChatConsolidatedAnalysisData`: Queries conversations grouped by (conv_id, contact_id), then queries each facet dimension
+  - `getConvToChatMap`: Maps conversation IDs to chat IDs for grouping
+  - `formatAnalysisBlock`: Formats analysis as markdown (header, summary, topics, entities, emotions, humor)
+  - Token budgeting: Respects token_max parameter, stops loading when budget exceeded
+  - Time filtering: Supports presets (day, week, month, year, all) and explicit dates
+  - Ordering: Supports timeAsc, timeDesc (similarity ordering still TODO)
+- Database schema (matches TS reference):
+  - conversations: id, chat_id, start_time, end_time, summary
+  - messages: id, guid, conversation_id, timestamp, sender_id, text (required for consolidated query)
+  - contacts: id, name, is_me
+  - chat_participants: id, chat_id, contact_id
+  - topics: id, conversation_id, contact_id, chat_id, title
+  - entities: id, conversation_id, contact_id, chat_id, title
+  - emotions: id, conversation_id, contact_id, chat_id, emotion_type
+  - humor_items: id, conversation_id, contact_id, chat_id, snippet
+- Comprehensive unit tests in `analyses_test.go` (all tests pass):
+  - setupTestAnalysesDB: creates synthetic test database with 3 conversations across 2 chats with complete facets
+  - TestAnalysesAdapter_Basic: verifies basic chat_ids filtering and output format (summary, topics, entities, emotions, humor)
+  - TestAnalysesAdapter_TimeFiltering: verifies "week" preset correctly filters out conversations older than 7 days
+  - TestAnalysesAdapter_ContactIDExpansion: verifies contact_ids correctly expand to chat_ids via chat_participants
+  - TestAnalysesAdapter_TokenMax: verifies token budget stops loading when exceeded
+  - TestAnalysesAdapter_OrderTimeDesc: verifies DESC time ordering (most recent first)
+  - TestAnalysesAdapter_FacetFiltering_Entities: verifies entity filtering (only conversations with "Alice" entity)
+  - TestAnalysesAdapter_FacetFiltering_Topics: verifies topic filtering (only conversations with "Health" topic)
+  - TestAnalysesAdapter_FacetFiltering_Emotions: verifies emotion filtering (only conversations with "Excited" emotion)
+  - TestAnalysesAdapter_IncludeFiltering: verifies include parameter controls which sections appear (summary only, no facets)
+  - TestAnalysesAdapter_EmptyResult: verifies graceful empty result for non-existent chats
+  - TestAnalysesAdapter_NoDBPath: verifies error when no DB path provided
+- Registered adapter in adapters.go registry as "analyses_context_data"
+- Parameter parsing helpers:
+  - `parseIncludeList`: extracts include filter (defaults to all: summary, topics, entities, emotions, humor)
+  - `parseMatchParams`: extracts facet filtering (entities, topics, emotions)
+  - `parseIntSlice`, `parseInt`, `parseString`: handle JSON unmarshaling edge cases (float64 from JSON)
+  - `parseTimeParams`: resolves time presets and explicit dates to ISO 8601 strings
+- Output format matches backend exactly:
+  - Header: "### YYYY-MM-DD — Conversation {id}"
+  - Summary: "Summary: {text}" (if included)
+  - Topics: "Topics: A, B, C" (sorted, deduplicated, if included)
+  - Entities: "Entities: X, Y, Z" (sorted, deduplicated, if included)
+  - Emotions: "Emotions: Happy, Sad" (sorted, deduplicated, if included)
+  - Humor: "Humor:\n  - joke 1\n  - joke 2" (up to 10 snippets, if included)
+- This adapter powers overall-v1 style prompts (comprehensive analysis summaries) in packs like analyses-all-comprehensive
+- V1 limitations (same as convos adapter):
+  - No similarity ordering (simAsc, simDesc) - requires vector embeddings (TODO)
+- All tests pass, verification script confirms implementation is correct
