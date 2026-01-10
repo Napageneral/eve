@@ -25,3 +25,11 @@ Phase: go-cli-context-engine
 
 ## Notes / Learnings (append after each story)
 
+### EVGO-000: Bootstrap Go module + CLI skeleton (2026-01-10)
+- Established `github.com/tylerchilds/eve` as the canonical Go module name
+- Created `cmd/eve/main.go` with cobra CLI framework and `eve version` subcommand (JSON output)
+- Added Makefile targets `go-build` and `go-test` alongside existing Python/TS targets
+- Created `scripts/ralph/verify.sh` for fast, deterministic Go test execution
+- Note: The main.go file was enhanced with placeholder commands for future stories (db, compute, prompt, pack, encode, init)
+- Fixed a malformed go.sum entry that was blocking module installation
+

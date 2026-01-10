@@ -7,7 +7,7 @@
     "ts/eve/context-engine/": "Reference-only TS context engine (do not keep as runtime dependency)",
     "ts/eve/prompts/": "Prompt source material to be consolidated into resources/",
     "ts/eve/context-packs/": "Pack source material to be consolidated into resources/",
-    "docs/skills/eve-db.md": "Agent skill doc (update once Go CLI primitives exist)"
+    "docs/skills/eve.md": "Agent skill doc (update once Go CLI primitives exist)"
   },
   "verification": {
     "command": "./scripts/ralph/verify.sh",
@@ -26,9 +26,9 @@
         "go test ./... passes"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "files": ["go.mod", "cmd/eve/main.go", "Makefile", "scripts/ralph/verify.sh"],
-      "notes": "This repo currently has Python/TS. We are evolving it in-place into Go-first; deletions come later."
+      "notes": "DONE: Go module + CLI skeleton in place. This repo currently has Python/TS. We are evolving it in-place into Go-first; deletions come later."
     },
     {
       "id": "EVGO-018",
