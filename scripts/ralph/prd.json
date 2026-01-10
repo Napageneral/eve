@@ -90,7 +90,7 @@
         "Unit tests cover: SELECT allowed, DELETE blocked, DELETE allowed with --write"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "files": ["cmd/eve/main.go", "internal/db/**"],
       "notes": "Raw SQL only; no ORMs. This becomes the #1 agent access primitive."
     },

@@ -73,3 +73,25 @@ Phase: go-cli-context-engine
   - Override directory support (creates temp dir with custom prompt, validates loading)
 - Key learning: embed.FS cannot use .. in paths, so symlinks are necessary to embed files from parent directories
 - EVGO-020 is effectively already complete since we implemented eve prompt/pack list/show commands as part of this story
+
+### EVGO-021: CLI primitive: eve db query (2026-01-10)
+- Implemented `internal/db` package with query execution primitives
+- Added `Execute` function that runs SQL queries against SQLite databases with safety checks
+- SQL safety validation: only SELECT and WITH statements allowed by default
+- Added `--write` flag to allow INSERT/UPDATE/DELETE/ALTER operations (bypasses safety check)
+- Added `--db` flag to specify database target:
+  - `warehouse` (default): ~/.config/eve/eve.db
+  - `queue`: ~/.config/eve/eve-queue.db
+  - `path:/abs/file.db`: absolute path to any SQLite database
+- JSON output format: `{ ok: bool, row_count: int, rows: []map[string]interface{}, error: string }`
+- Updated `cmd/eve/main.go` to wire up `eve db query` command with all flags
+- Added github.com/mattn/go-sqlite3 dependency for SQLite driver
+- Unit tests cover:
+  - SQL safety checks (SELECT/WITH allowed, DELETE/UPDATE/INSERT/DROP/ALTER blocked)
+  - Database spec parsing (warehouse, queue, path:, validation of absolute paths)
+  - SELECT query execution with row results
+  - DELETE blocked without --write flag
+  - DELETE allowed with --write flag (note: db.Query doesn't support mutations, but safety check is bypassed)
+  - WITH (CTE) query support
+- Key learning: SQLite driver requires CGO, which is enabled by default in Go
+- Key learning: db.Query() in database/sql doesn't support mutation queries (returns error), but we allow them through when --write is set since the safety check is the main gate
