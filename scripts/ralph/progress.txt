@@ -124,3 +124,54 @@ Phase: go-cli-context-engine
   - reactionTypeToEmoji mapping for iMessage reaction types (2000-2005)
 - Key learning: iMessage dates are stored as nanoseconds since 2001-01-01, requires conversion
 - This becomes the canonical encoding implementation (TypeScript version is reference only)
+
+### EVGO-023: Go context engine v1 - compile packs with static_snippet adapter (2026-01-10)
+- Implemented `internal/contextengine` package with core compilation types:
+  - ExecuteRequest/ExecuteResult for successful compilation
+  - ExecuteError for various failure modes (PromptNotFound, PackNotFound, BudgetExceeded, ValidationError, etc.)
+  - ContextLedger and LedgerItem for tracking token usage across slices
+  - HiddenPart for compiled context data (not shown to user in prompt)
+  - ExecutionInfo for metadata about how to execute the prompt
+- Implemented variable substitution in `variables.go`:
+  - Handles {{variable}} syntax in pack slice params
+  - Supports pure variable replacement: {{varName}} → value
+  - Supports template strings: "Hello {{name}}" → "Hello Alice"
+  - Built-in variables: {{source_chat}} → context.SourceChat
+  - User variables: {{user_var}} → context.Vars["user_var"]
+  - Recursive resolution for nested objects and arrays
+  - substituteInPrompt for prompt body variable replacement (supports both {{var}} and {{{var}}})
+- Implemented static_snippet retrieval adapter in `adapters.go`:
+  - Simplest adapter: returns static text from params.text
+  - Token estimation: length / 4 (rough approximation)
+  - Registered in retrievalAdapters registry for use by engine
+- Implemented context engine in `engine.go`:
+  - Engine.Execute compiles a context pack given a prompt ID
+  - Loads prompt and pack from resources.Loader
+  - Extracts default_pack from prompt frontmatter (handles both flat and nested context.default_pack)
+  - Compiles all slices by calling appropriate retrieval adapters
+  - Variable substitution applied to slice params before retrieval
+  - Token budgeting: checks total tokens against budget with safety factor (0.9)
+  - V1 budget fitting: just errors if over budget (no trimming/compression yet)
+  - Returns ExecuteResult with ledger, hidden parts, visible prompt, and execution metadata
+  - Returns ExecuteError for various failure cases with actionable suggestions
+- Token counting strategy: use estimated_tokens from pack as baseline, or actual_tokens if higher
+  - This handles cases where estimated_tokens is set in pack but retrieval calculates actual tokens
+  - Ensures budget checks work correctly when pack author provides token estimates
+- Added `eve context compile` command to CLI:
+  - Required flags: --prompt <id>
+  - Optional flags: --pack <id>, --source-chat <id>, --vars <json>, --budget <tokens>
+  - JSON-only output (either ExecuteResult or ExecuteError)
+  - Uses resources loader with --resources-dir override support
+- Comprehensive unit tests in `engine_test.go`:
+  - staticSnippetAdapter basic functionality
+  - Variable substitution: pure variables, template strings, built-in variables, missing variable errors
+  - TestContextEngineCompile_TestStaticPack: compiles test-v1 prompt with test-static pack from embedded resources
+  - TestContextEngineCompile_WithVariables: creates temp prompt/pack with variable substitution, verifies substitution in both params and prompt body
+  - TestContextEngineCompile_PromptNotFound: validates error handling for missing prompt
+  - TestContextEngineCompile_PackNotFound: validates error handling for missing pack
+  - TestContextEngineCompile_BudgetExceeded: validates budget checking with large estimated_tokens
+- All tests pass with synthetic fixtures (no real user data, no real Gemini calls)
+- Key architectural decision: v1 uses estimated_tokens from pack as authoritative when provided
+  - Future dynamic retrievals (convos_context_data, analyses_context_data) will calculate actual tokens
+  - Budget fitting logic (shrink_time, compress_encoding, drop_candidates) deferred to future stories
+- This establishes the foundation for porting TS context engine runtime into Go CLI

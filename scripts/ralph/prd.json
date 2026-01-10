@@ -121,7 +121,7 @@
         "Unit test compiles convo-all-context pack using conversation_text var and returns a hidden part"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "files": ["internal/contextengine/**", "cmd/eve/main.go"],
       "notes": "Budget fitting can be v1: error if over budget."
     },
