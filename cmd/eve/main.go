@@ -7,6 +7,7 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+	"github.com/tylerchilds/eve/internal/contextengine"
 	"github.com/tylerchilds/eve/internal/db"
 	"github.com/tylerchilds/eve/internal/encoding"
 	"github.com/tylerchilds/eve/internal/resources"
@@ -273,6 +274,70 @@ then optionally runs high-throughput conversation analysis + embeddings.`,
 	encodeConvoCmd.Flags().StringVar(&encodeDBPath, "db", "", "Database path (default: ~/.config/eve/eve.db)")
 	encodeCmd.AddCommand(encodeConvoCmd)
 
+	// eve context (subcommand group)
+	contextCmd := &cobra.Command{
+		Use:   "context",
+		Short: "Context engine operations",
+	}
+
+	// eve context compile
+	var contextPromptID string
+	var contextPackID string
+	var contextSourceChat int
+	var contextVarsJSON string
+	var contextBudget int
+	contextCompileCmd := &cobra.Command{
+		Use:   "compile --prompt <id>",
+		Short: "Compile a context pack into hidden parts + visible prompt",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if contextPromptID == "" {
+				return fmt.Errorf("--prompt flag is required")
+			}
+
+			// Parse vars from JSON if provided
+			vars := make(map[string]interface{})
+			if contextVarsJSON != "" {
+				if err := json.Unmarshal([]byte(contextVarsJSON), &vars); err != nil {
+					return fmt.Errorf("failed to parse --vars JSON: %w", err)
+				}
+			}
+
+			// Determine database path
+			home, _ := os.UserHomeDir()
+			dbPath := fmt.Sprintf("%s/.config/eve/eve.db", home)
+
+			// Create engine
+			loader := resources.NewLoader(resourcesDir)
+			engine := contextengine.NewEngine(loader, dbPath)
+
+			// Build request
+			request := contextengine.ExecuteRequest{
+				PromptID:       contextPromptID,
+				SourceChat:     contextSourceChat,
+				Vars:           vars,
+				OverridePackID: contextPackID,
+				BudgetTokens:   contextBudget,
+			}
+
+			// Execute
+			result, err := engine.Execute(request)
+			if err != nil {
+				return fmt.Errorf("compilation failed: %w", err)
+			}
+
+			// Output JSON (result is either ExecuteResult or ExecuteError)
+			out, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(out))
+			return nil
+		},
+	}
+	contextCompileCmd.Flags().StringVar(&contextPromptID, "prompt", "", "Prompt ID to compile (required)")
+	contextCompileCmd.Flags().StringVar(&contextPackID, "pack", "", "Override pack ID (default: use prompt's default_pack)")
+	contextCompileCmd.Flags().IntVar(&contextSourceChat, "source-chat", 0, "Source chat ID for context")
+	contextCompileCmd.Flags().StringVar(&contextVarsJSON, "vars", "", "Variables as JSON object (e.g. '{\"name\":\"value\"}')")
+	contextCompileCmd.Flags().IntVar(&contextBudget, "budget", 0, "Token budget (default: 300000)")
+	contextCmd.AddCommand(contextCompileCmd)
+
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(dbCmd)
@@ -280,6 +345,7 @@ then optionally runs high-throughput conversation analysis + embeddings.`,
 	rootCmd.AddCommand(promptCmd)
 	rootCmd.AddCommand(packCmd)
 	rootCmd.AddCommand(encodeCmd)
+	rootCmd.AddCommand(contextCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
