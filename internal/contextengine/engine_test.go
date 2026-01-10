@@ -365,6 +365,18 @@ Test prompt.`
 		t.Fatalf("failed to create packs dir: %v", err)
 	}
 
+	// Generate a large text that will exceed the budget
+	// Budget is 1000, with safety factor 0.90 = 900 effective
+	// We need more than 900 tokens = more than 3600 characters
+	largeText := string(make([]byte, 10000))
+	for i := range largeText {
+		largeText = largeText[:i] + "x"
+	}
+	largeText = ""
+	for i := 0; i < 10000; i++ {
+		largeText += "x"
+	}
+
 	packContent := `id: test-large-pack
 name: Test Large Pack
 version: 1.0.0
@@ -373,8 +385,8 @@ slices:
   - name: LARGE_CONTEXT
     retrieval: static_snippet
     params:
-      text: "Large context data"
-    estimated_tokens: 500000
+      text: "` + largeText + `"
+    estimated_tokens: 10000
     why_include: "Test budget limit"`
 
 	if err := os.WriteFile(filepath.Join(packsDir, "test-large.pack.yaml"), []byte(packContent), 0644); err != nil {
