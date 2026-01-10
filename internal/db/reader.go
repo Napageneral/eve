@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tylerchilds/eve/internal/encoding"
+	"github.com/brandtty/eve/internal/encoding"
 )
 
 // ConversationReader reads conversations and their messages from the warehouse

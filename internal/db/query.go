@@ -133,12 +133,12 @@ func Execute(opts QueryOptions) QueryResult {
 // parseDatabaseSpec converts a db spec (warehouse, queue, path:...) to a file path
 func parseDatabaseSpec(spec string) (string, error) {
 	if spec == "" || spec == "warehouse" {
-		// Default to warehouse
+		// Default to warehouse - use macOS Application Support
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("failed to get home directory: %w", err)
 		}
-		return filepath.Join(home, ".config", "eve", "eve.db"), nil
+		return filepath.Join(home, "Library", "Application Support", "Eve", "eve.db"), nil
 	}
 
 	if spec == "queue" {
@@ -146,7 +146,7 @@ func parseDatabaseSpec(spec string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to get home directory: %w", err)
 		}
-		return filepath.Join(home, ".config", "eve", "eve-queue.db"), nil
+		return filepath.Join(home, "Library", "Application Support", "Eve", "eve-queue.db"), nil
 	}
 
 	if strings.HasPrefix(spec, "path:") {

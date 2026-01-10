@@ -12,9 +12,9 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/tylerchilds/eve/internal/gemini"
-	"github.com/tylerchilds/eve/internal/migrate"
-	"github.com/tylerchilds/eve/internal/queue"
+	"github.com/brandtty/eve/internal/gemini"
+	"github.com/brandtty/eve/internal/migrate"
+	"github.com/brandtty/eve/internal/queue"
 )
 
 func TestEmbeddingJob_Conversation(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tylerchilds/eve/internal/gemini"
+	"github.com/brandtty/eve/internal/gemini"
 )
 
 const (

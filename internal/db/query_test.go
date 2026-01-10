@@ -79,19 +79,19 @@ func TestParseDatabaseSpec(t *testing.T) {
 		{
 			name:     "warehouse (default)",
 			spec:     "warehouse",
-			wantPath: filepath.Join(home, ".config", "eve", "eve.db"),
+			wantPath: filepath.Join(home, "Library", "Application Support", "Eve", "eve.db"),
 			wantErr:  false,
 		},
 		{
 			name:     "empty defaults to warehouse",
 			spec:     "",
-			wantPath: filepath.Join(home, ".config", "eve", "eve.db"),
+			wantPath: filepath.Join(home, "Library", "Application Support", "Eve", "eve.db"),
 			wantErr:  false,
 		},
 		{
 			name:     "queue",
 			spec:     "queue",
-			wantPath: filepath.Join(home, ".config", "eve", "eve-queue.db"),
+			wantPath: filepath.Join(home, "Library", "Application Support", "Eve", "eve-queue.db"),
 			wantErr:  false,
 		},
 		{

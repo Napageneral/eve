@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -13,12 +14,15 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
-	"github.com/tylerchilds/eve/internal/config"
-	"github.com/tylerchilds/eve/internal/engine"
-	"github.com/tylerchilds/eve/internal/etl"
-	"github.com/tylerchilds/eve/internal/gemini"
-	"github.com/tylerchilds/eve/internal/migrate"
-	"github.com/tylerchilds/eve/internal/queue"
+	"github.com/brandtty/eve/internal/config"
+	"github.com/brandtty/eve/internal/db"
+	"github.com/brandtty/eve/internal/encoding"
+	"github.com/brandtty/eve/internal/engine"
+	"github.com/brandtty/eve/internal/etl"
+	"github.com/brandtty/eve/internal/gemini"
+	"github.com/brandtty/eve/internal/migrate"
+	"github.com/brandtty/eve/internal/queue"
+	"github.com/brandtty/eve/internal/resources"
 )
 
 var version = "0.1.0-dev"
@@ -453,12 +457,13 @@ func main() {
 	computeRunCmd.Flags().IntVar(&runWorkerCount, "workers", 0, "Number of concurrent workers (default: 10)")
 	computeRunCmd.Flags().IntVar(&runTimeout, "timeout", 0, "Timeout in seconds (0 = no timeout)")
 
-	// Compute test: run convo-all-v1 against all Casey conversations and report facet counts.
-	var caseyWorkers int
-	var caseyLimit int
-	computeTestCaseyCmd := &cobra.Command{
-		Use:   "test-casey-convo-all",
-		Short: "Run convo-all-v1 analysis for all Casey Adams conversations and output aggregate facet counts",
+	// Compute test: run convo-all-v1 analysis against a chat and report facet counts.
+	var testAnalysisWorkers int
+	var testAnalysisLimit int
+	var testAnalysisChatID int
+	computeTestAnalysisCmd := &cobra.Command{
+		Use:   "test-analysis",
+		Short: "Run convo-all-v1 analysis for a chat (default: chat with most messages) and output aggregate facet counts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Load()
 			if cfg.GeminiAPIKey == "" {
@@ -472,34 +477,32 @@ func main() {
 			}
 			defer warehouseDB.Close()
 
-			// Resolve Casey contact_id
-			var caseyContactID int
-			err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name = 'Casey Adams' LIMIT 1`).Scan(&caseyContactID)
-			if err == sql.ErrNoRows {
-				err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name LIKE '%Casey Adams%' LIMIT 1`).Scan(&caseyContactID)
-			}
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to resolve Casey contact id: %w", err))
-			}
-
-			// Find the one-on-one chat with Casey by inbound volume from that contact.
-			var caseyChatID int
-			err = warehouseDB.QueryRow(`
-				SELECT chat_id
-				FROM messages
-				WHERE sender_id = ?
-				GROUP BY chat_id
-				ORDER BY COUNT(*) DESC
-				LIMIT 1
-			`, caseyContactID).Scan(&caseyChatID)
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to resolve Casey chat id: %w", err))
+			// Find chat ID - use provided or find chat with most messages
+			targetChatID := testAnalysisChatID
+			var chatName string
+			if targetChatID == 0 {
+				// Find the chat with the most messages
+				err = warehouseDB.QueryRow(`
+					SELECT c.id, COALESCE(c.chat_name, 'Unknown')
+					FROM chats c
+					ORDER BY c.total_messages DESC
+					LIMIT 1
+				`).Scan(&targetChatID, &chatName)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to find chat with most messages: %w", err))
+				}
+			} else {
+				// Get chat name for the provided ID
+				err = warehouseDB.QueryRow(`SELECT COALESCE(chat_name, 'Unknown') FROM chats WHERE id = ?`, targetChatID).Scan(&chatName)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to find chat %d: %w", targetChatID, err))
+				}
 			}
 
 			// Load all conversation IDs for that chat.
-			rows, err := warehouseDB.Query(`SELECT id FROM conversations WHERE chat_id = ? ORDER BY id`, caseyChatID)
+			rows, err := warehouseDB.Query(`SELECT id FROM conversations WHERE chat_id = ? ORDER BY id`, targetChatID)
 			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to read conversations for chat %d: %w", caseyChatID, err))
+				return printErrorJSON(fmt.Errorf("failed to read conversations for chat %d: %w", targetChatID, err))
 			}
 			var conversationIDs []int
 			for rows.Next() {
@@ -512,11 +515,11 @@ func main() {
 			}
 			rows.Close()
 			if len(conversationIDs) == 0 {
-				return printErrorJSON(fmt.Errorf("no conversations found for Casey chat_id=%d", caseyChatID))
+				return printErrorJSON(fmt.Errorf("no conversations found for chat_id=%d", targetChatID))
 			}
 			conversationsFoundTotal := len(conversationIDs)
-			if caseyLimit > 0 && len(conversationIDs) > caseyLimit {
-				conversationIDs = conversationIDs[:caseyLimit]
+			if testAnalysisLimit > 0 && len(conversationIDs) > testAnalysisLimit {
+				conversationIDs = conversationIDs[:testAnalysisLimit]
 			}
 
 			// Reset prior analysis/facets so counts reflect this run.
@@ -525,7 +528,7 @@ func main() {
 			if err != nil {
 				return printErrorJSON(fmt.Errorf("failed to begin reset transaction: %w", err))
 			}
-			if caseyLimit > 0 {
+			if testAnalysisLimit > 0 {
 				// Build (?,?,...) IN clause for selected conversation IDs (<= 999).
 				placeholders := make([]string, 0, len(conversationIDs))
 				args := make([]interface{}, 0, len(conversationIDs))
@@ -559,23 +562,23 @@ func main() {
 					DELETE FROM conversation_analyses
 					WHERE eve_prompt_id = 'convo-all-v1'
 					  AND conversation_id IN (SELECT id FROM conversations WHERE chat_id = ?)
-				`, caseyChatID); err != nil {
+				`, targetChatID); err != nil {
 					tx.Rollback()
 					return printErrorJSON(fmt.Errorf("failed to clear conversation_analyses: %w", err))
 				}
-				if _, err := tx.Exec(`DELETE FROM entities WHERE chat_id = ?`, caseyChatID); err != nil {
+				if _, err := tx.Exec(`DELETE FROM entities WHERE chat_id = ?`, targetChatID); err != nil {
 					tx.Rollback()
 					return printErrorJSON(fmt.Errorf("failed to clear entities: %w", err))
 				}
-				if _, err := tx.Exec(`DELETE FROM topics WHERE chat_id = ?`, caseyChatID); err != nil {
+				if _, err := tx.Exec(`DELETE FROM topics WHERE chat_id = ?`, targetChatID); err != nil {
 					tx.Rollback()
 					return printErrorJSON(fmt.Errorf("failed to clear topics: %w", err))
 				}
-				if _, err := tx.Exec(`DELETE FROM emotions WHERE chat_id = ?`, caseyChatID); err != nil {
+				if _, err := tx.Exec(`DELETE FROM emotions WHERE chat_id = ?`, targetChatID); err != nil {
 					tx.Rollback()
 					return printErrorJSON(fmt.Errorf("failed to clear emotions: %w", err))
 				}
-				if _, err := tx.Exec(`DELETE FROM humor_items WHERE chat_id = ?`, caseyChatID); err != nil {
+				if _, err := tx.Exec(`DELETE FROM humor_items WHERE chat_id = ?`, targetChatID); err != nil {
 					tx.Rollback()
 					return printErrorJSON(fmt.Errorf("failed to clear humor_items: %w", err))
 				}
@@ -585,7 +588,7 @@ func main() {
 			}
 
 			// Use an ephemeral queue DB so this test is repeatable and doesn't touch the main queue.
-			tmp, err := os.CreateTemp("", "eve-queue-casey-*.db")
+			tmp, err := os.CreateTemp("", "eve-queue-test-*.db")
 			if err != nil {
 				return printErrorJSON(fmt.Errorf("failed to create temp queue db: %w", err))
 			}
@@ -607,7 +610,7 @@ func main() {
 
 			q := queue.New(queueDB)
 
-			// Enqueue analysis jobs (convo-all-v1) for every conversation in the Casey chat.
+			// Enqueue analysis jobs (convo-all-v1) for every conversation in the target chat.
 			enqueued := 0
 			for _, convID := range conversationIDs {
 				err := q.Enqueue(queue.EnqueueOptions{
@@ -636,10 +639,10 @@ func main() {
 				analysisRPMCtrl.Start(context.Background())
 			}
 			engineCfg := engine.DefaultConfig()
-			if caseyWorkers > 0 {
-				engineCfg.WorkerCount = caseyWorkers
+			if testAnalysisWorkers > 0 {
+				engineCfg.WorkerCount = testAnalysisWorkers
 			}
-			engineCfg.LeaseOwner = fmt.Sprintf("casey-test-%d", time.Now().UnixNano())
+			engineCfg.LeaseOwner = fmt.Sprintf("test-analysis-%d", time.Now().UnixNano())
 
 			// Cap warehouse DB pool to avoid lock/cache thrash at high worker counts.
 			maxOpen, maxIdle := recommendedSQLitePool(engineCfg.WorkerCount)
@@ -728,7 +731,7 @@ func main() {
 
 			// Aggregate facet counts (no message text).
 			var topicsTotal, entitiesTotal, emotionsTotal, humorTotal int
-			if caseyLimit > 0 {
+			if testAnalysisLimit > 0 {
 				placeholders := make([]string, 0, len(conversationIDs))
 				args := make([]interface{}, 0, len(conversationIDs))
 				for _, id := range conversationIDs {
@@ -765,16 +768,16 @@ func main() {
 					humorTotal = v
 				}
 			} else {
-				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM topics WHERE chat_id = ?`, caseyChatID).Scan(&topicsTotal); err != nil {
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM topics WHERE chat_id = ?`, targetChatID).Scan(&topicsTotal); err != nil {
 					return printErrorJSON(fmt.Errorf("failed to count topics: %w", err))
 				}
-				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM entities WHERE chat_id = ?`, caseyChatID).Scan(&entitiesTotal); err != nil {
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM entities WHERE chat_id = ?`, targetChatID).Scan(&entitiesTotal); err != nil {
 					return printErrorJSON(fmt.Errorf("failed to count entities: %w", err))
 				}
-				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM emotions WHERE chat_id = ?`, caseyChatID).Scan(&emotionsTotal); err != nil {
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM emotions WHERE chat_id = ?`, targetChatID).Scan(&emotionsTotal); err != nil {
 					return printErrorJSON(fmt.Errorf("failed to count emotions: %w", err))
 				}
-				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM humor_items WHERE chat_id = ?`, caseyChatID).Scan(&humorTotal); err != nil {
+				if err := warehouseDB.QueryRow(`SELECT COUNT(*) FROM humor_items WHERE chat_id = ?`, targetChatID).Scan(&humorTotal); err != nil {
 					return printErrorJSON(fmt.Errorf("failed to count humor_items: %w", err))
 				}
 			}
@@ -782,7 +785,7 @@ func main() {
 			// Count statuses from the warehouse.
 			statusCounts := map[string]int{}
 			var srows *sql.Rows
-			if caseyLimit > 0 {
+			if testAnalysisLimit > 0 {
 				placeholders := make([]string, 0, len(conversationIDs))
 				args := make([]interface{}, 0, len(conversationIDs))
 				for _, id := range conversationIDs {
@@ -805,7 +808,7 @@ func main() {
 					WHERE eve_prompt_id = 'convo-all-v1'
 					  AND conversation_id IN (SELECT id FROM conversations WHERE chat_id = ?)
 					GROUP BY status
-				`, caseyChatID)
+				`, targetChatID)
 			}
 			if err != nil {
 				return printErrorJSON(fmt.Errorf("failed to query analysis status counts: %w", err))
@@ -828,7 +831,7 @@ func main() {
 			}
 			var blocked []blockedConvo
 			var brows *sql.Rows
-			if caseyLimit > 0 {
+			if testAnalysisLimit > 0 {
 				placeholders := make([]string, 0, len(conversationIDs))
 				args := make([]interface{}, 0, len(conversationIDs))
 				for _, id := range conversationIDs {
@@ -853,7 +856,7 @@ func main() {
 					  AND status = 'blocked'
 					  AND conversation_id IN (SELECT id FROM conversations WHERE chat_id = ?)
 					ORDER BY conversation_id
-				`, caseyChatID)
+				`, targetChatID)
 			}
 			if err != nil {
 				return printErrorJSON(fmt.Errorf("failed to query blocked conversations: %w", err))
@@ -871,8 +874,8 @@ func main() {
 
 			output := map[string]interface{}{
 				"ok":                     true,
-				"casey_contact_id":       caseyContactID,
-				"casey_chat_id":          caseyChatID,
+				"chat_id":                targetChatID,
+				"chat_name":              chatName,
 				"conversations_total":    conversationsFoundTotal,
 				"conversations_selected": len(conversationIDs),
 				"analysis_prompt_id":     "convo-all-v1",
@@ -924,16 +927,18 @@ func main() {
 			return printJSON(output)
 		},
 	}
-	computeTestCaseyCmd.Flags().IntVar(&caseyWorkers, "workers", 800, "Number of concurrent workers")
-	computeTestCaseyCmd.Flags().IntVar(&caseyLimit, "limit", 0, "Limit number of conversations analyzed (0 = all)")
+	computeTestAnalysisCmd.Flags().IntVar(&testAnalysisWorkers, "workers", 800, "Number of concurrent workers")
+	computeTestAnalysisCmd.Flags().IntVar(&testAnalysisLimit, "limit", 0, "Limit number of conversations analyzed (0 = all)")
+	computeTestAnalysisCmd.Flags().IntVar(&testAnalysisChatID, "chat-id", 0, "Chat ID to analyze (0 = chat with most messages)")
 
-	// Compute test: embed Casey conversations + facet rows and report throughput.
-	var caseyEmbedWorkers int
-	var caseyEmbedLimitConvos int
-	var caseyEmbedLimitFacets int
-	computeTestCaseyEmbeddingsCmd := &cobra.Command{
-		Use:   "test-casey-embeddings",
-		Short: "Embed all Casey conversations + facet rows (topics/entities/emotions/humor) and output aggregate counts + throughput",
+	// Compute test: embed conversations + facet rows and report throughput.
+	var testEmbedWorkers int
+	var testEmbedLimitConvos int
+	var testEmbedLimitFacets int
+	var testEmbedChatID int
+	computeTestEmbeddingsCmd := &cobra.Command{
+		Use:   "test-embeddings",
+		Short: "Embed conversations + facet rows (default: chat with most messages) and output aggregate counts + throughput",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Load()
 			if cfg.GeminiAPIKey == "" {
@@ -946,34 +951,32 @@ func main() {
 			}
 			defer warehouseDB.Close()
 
-			// Resolve Casey contact_id
-			var caseyContactID int
-			err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name = 'Casey Adams' LIMIT 1`).Scan(&caseyContactID)
-			if err == sql.ErrNoRows {
-				err = warehouseDB.QueryRow(`SELECT id FROM contacts WHERE name LIKE '%Casey Adams%' LIMIT 1`).Scan(&caseyContactID)
-			}
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to resolve Casey contact id: %w", err))
-			}
-
-			// Find Casey chat_id by inbound volume.
-			var caseyChatID int
-			err = warehouseDB.QueryRow(`
-				SELECT chat_id
-				FROM messages
-				WHERE sender_id = ?
-				GROUP BY chat_id
-				ORDER BY COUNT(*) DESC
-				LIMIT 1
-			`, caseyContactID).Scan(&caseyChatID)
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to resolve Casey chat id: %w", err))
+			// Find chat ID - use provided or find chat with most messages
+			targetChatID := testEmbedChatID
+			var chatName string
+			if targetChatID == 0 {
+				// Find the chat with the most messages
+				err = warehouseDB.QueryRow(`
+					SELECT c.id, COALESCE(c.chat_name, 'Unknown')
+					FROM chats c
+					ORDER BY c.total_messages DESC
+					LIMIT 1
+				`).Scan(&targetChatID, &chatName)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to find chat with most messages: %w", err))
+				}
+			} else {
+				// Get chat name for the provided ID
+				err = warehouseDB.QueryRow(`SELECT COALESCE(chat_name, 'Unknown') FROM chats WHERE id = ?`, targetChatID).Scan(&chatName)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to find chat %d: %w", targetChatID, err))
+				}
 			}
 
 			// Load conversation IDs
-			rows, err := warehouseDB.Query(`SELECT id FROM conversations WHERE chat_id = ? ORDER BY id`, caseyChatID)
+			rows, err := warehouseDB.Query(`SELECT id FROM conversations WHERE chat_id = ? ORDER BY id`, targetChatID)
 			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to read conversations for chat %d: %w", caseyChatID, err))
+				return printErrorJSON(fmt.Errorf("failed to read conversations for chat %d: %w", targetChatID, err))
 			}
 			var conversationIDs []int
 			for rows.Next() {
@@ -986,10 +989,10 @@ func main() {
 			}
 			rows.Close()
 			if len(conversationIDs) == 0 {
-				return printErrorJSON(fmt.Errorf("no conversations found for Casey chat_id=%d", caseyChatID))
+				return printErrorJSON(fmt.Errorf("no conversations found for chat_id=%d", targetChatID))
 			}
-			if caseyEmbedLimitConvos > 0 && len(conversationIDs) > caseyEmbedLimitConvos {
-				conversationIDs = conversationIDs[:caseyEmbedLimitConvos]
+			if testEmbedLimitConvos > 0 && len(conversationIDs) > testEmbedLimitConvos {
+				conversationIDs = conversationIDs[:testEmbedLimitConvos]
 			}
 
 			// Load facet IDs (must exist from prior convo-all run).
@@ -1002,7 +1005,7 @@ func main() {
 			facet := facetIDs{}
 
 			loadIDs := func(sqlStr string) ([]int, error) {
-				r, err := warehouseDB.Query(sqlStr, caseyChatID)
+				r, err := warehouseDB.Query(sqlStr, targetChatID)
 				if err != nil {
 					return nil, err
 				}
@@ -1021,38 +1024,38 @@ func main() {
 			if ids, err := loadIDs(`SELECT id FROM entities WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load entity ids: %w", err))
 			} else {
-				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
-					ids = ids[:caseyEmbedLimitFacets]
+				if testEmbedLimitFacets > 0 && len(ids) > testEmbedLimitFacets {
+					ids = ids[:testEmbedLimitFacets]
 				}
 				facet.Entities = ids
 			}
 			if ids, err := loadIDs(`SELECT id FROM topics WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load topic ids: %w", err))
 			} else {
-				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
-					ids = ids[:caseyEmbedLimitFacets]
+				if testEmbedLimitFacets > 0 && len(ids) > testEmbedLimitFacets {
+					ids = ids[:testEmbedLimitFacets]
 				}
 				facet.Topics = ids
 			}
 			if ids, err := loadIDs(`SELECT id FROM emotions WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load emotion ids: %w", err))
 			} else {
-				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
-					ids = ids[:caseyEmbedLimitFacets]
+				if testEmbedLimitFacets > 0 && len(ids) > testEmbedLimitFacets {
+					ids = ids[:testEmbedLimitFacets]
 				}
 				facet.Emotions = ids
 			}
 			if ids, err := loadIDs(`SELECT id FROM humor_items WHERE chat_id = ? ORDER BY id`); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to load humor_item ids: %w", err))
 			} else {
-				if caseyEmbedLimitFacets > 0 && len(ids) > caseyEmbedLimitFacets {
-					ids = ids[:caseyEmbedLimitFacets]
+				if testEmbedLimitFacets > 0 && len(ids) > testEmbedLimitFacets {
+					ids = ids[:testEmbedLimitFacets]
 				}
 				facet.Humor = ids
 			}
 
 			// Temp queue DB for repeatable embedding benchmark.
-			tmp, err := os.CreateTemp("", "eve-queue-casey-embeddings-*.db")
+			tmp, err := os.CreateTemp("", "eve-queue-test-embeddings-*.db")
 			if err != nil {
 				return printErrorJSON(fmt.Errorf("failed to create temp queue db: %w", err))
 			}
@@ -1083,10 +1086,10 @@ func main() {
 				embedRPMCtrl.Start(context.Background())
 			}
 			engineCfg := engine.DefaultConfig()
-			if caseyEmbedWorkers > 0 {
-				engineCfg.WorkerCount = caseyEmbedWorkers
+			if testEmbedWorkers > 0 {
+				engineCfg.WorkerCount = testEmbedWorkers
 			}
-			engineCfg.LeaseOwner = fmt.Sprintf("casey-embeddings-%d", time.Now().UnixNano())
+			engineCfg.LeaseOwner = fmt.Sprintf("test-embeddings-%d", time.Now().UnixNano())
 
 			// Cap warehouse DB pool to avoid lock/cache thrash at high worker counts.
 			maxOpen, maxIdle := recommendedSQLitePool(engineCfg.WorkerCount)
@@ -1234,7 +1237,7 @@ func main() {
 				WHERE entity_type = 'conversation'
 				  AND entity_id IN (SELECT id FROM conversations WHERE chat_id = ?)
 				  AND model = ?
-			`, caseyChatID, cfg.EmbedModel).Scan(&convEmbCount); err != nil {
+			`, targetChatID, cfg.EmbedModel).Scan(&convEmbCount); err != nil {
 				return printErrorJSON(fmt.Errorf("failed to count conversation embeddings: %w", err))
 			}
 
@@ -1254,8 +1257,8 @@ func main() {
 
 			output := map[string]interface{}{
 				"ok":               true,
-				"casey_contact_id": caseyContactID,
-				"casey_chat_id":    caseyChatID,
+				"chat_id":          targetChatID,
+				"chat_name":        chatName,
 				"embed_model":      cfg.EmbedModel,
 				"embed_rpm_config": cfg.EmbedRPM,
 				"embed_rpm_effective": func() int {
@@ -1285,20 +1288,372 @@ func main() {
 			return printJSON(output)
 		},
 	}
-	computeTestCaseyEmbeddingsCmd.Flags().IntVar(&caseyEmbedWorkers, "workers", 800, "Number of concurrent workers")
-	computeTestCaseyEmbeddingsCmd.Flags().IntVar(&caseyEmbedLimitConvos, "limit-conversations", 0, "Limit number of conversations embedded (0 = all)")
-	computeTestCaseyEmbeddingsCmd.Flags().IntVar(&caseyEmbedLimitFacets, "limit-facets", 0, "Limit number of facet rows embedded per type (0 = all)")
+	computeTestEmbeddingsCmd.Flags().IntVar(&testEmbedWorkers, "workers", 800, "Number of concurrent workers")
+	computeTestEmbeddingsCmd.Flags().IntVar(&testEmbedLimitConvos, "limit-conversations", 0, "Limit number of conversations embedded (0 = all)")
+	computeTestEmbeddingsCmd.Flags().IntVar(&testEmbedLimitFacets, "limit-facets", 0, "Limit number of facet rows embedded per type (0 = all)")
+	computeTestEmbeddingsCmd.Flags().IntVar(&testEmbedChatID, "chat-id", 0, "Chat ID to embed (0 = chat with most messages)")
 
 	computeCmd.AddCommand(computeStatusCmd)
 	computeCmd.AddCommand(computeRunCmd)
-	computeCmd.AddCommand(computeTestCaseyCmd)
-	computeCmd.AddCommand(computeTestCaseyEmbeddingsCmd)
+	computeCmd.AddCommand(computeTestAnalysisCmd)
+	computeCmd.AddCommand(computeTestEmbeddingsCmd)
+
+	// DB command group
+	dbCmd := &cobra.Command{
+		Use:   "db",
+		Short: "Database operations",
+	}
+
+	var dbQuerySQL string
+	var dbQueryDB string
+	var dbQueryWrite bool
+	var dbQueryLimit int
+	var dbQueryPretty bool
+
+	dbQueryCmd := &cobra.Command{
+		Use:   "query",
+		Short: "Execute SQL query against Eve database",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dbQuerySQL == "" {
+				return printErrorJSON(fmt.Errorf("--sql is required"))
+			}
+
+			// Convert db spec to internal format
+			dbSpec := "warehouse"
+			if dbQueryDB == "queue" {
+				dbSpec = "queue"
+			} else if dbQueryDB != "" && dbQueryDB != "warehouse" {
+				dbSpec = "path:" + dbQueryDB
+			}
+
+			result := db.Execute(db.QueryOptions{
+				SQL:        dbQuerySQL,
+				DBSpec:     dbSpec,
+				AllowWrite: dbQueryWrite,
+			})
+
+			// Apply limit if specified
+			if dbQueryLimit > 0 && len(result.Rows) > dbQueryLimit {
+				result.Rows = result.Rows[:dbQueryLimit]
+				result.RowCount = dbQueryLimit
+			}
+
+			return printJSON(result)
+		},
+	}
+
+	dbQueryCmd.Flags().StringVar(&dbQuerySQL, "sql", "", "SQL query to execute")
+	dbQueryCmd.Flags().StringVar(&dbQueryDB, "db", "warehouse", "Database to query (warehouse, queue, or path)")
+	dbQueryCmd.Flags().BoolVar(&dbQueryWrite, "write", false, "Allow write operations")
+	dbQueryCmd.Flags().IntVar(&dbQueryLimit, "limit", 0, "Limit number of rows returned")
+	dbQueryCmd.Flags().BoolVar(&dbQueryPretty, "pretty", false, "Pretty print JSON output (ignored, always pretty)")
+
+	dbCmd.AddCommand(dbQueryCmd)
+
+	// Prompt commands
+	promptCmd := &cobra.Command{
+		Use:   "prompt",
+		Short: "Manage prompts",
+	}
+
+	promptListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List available prompts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			loader := resources.NewLoader("")
+			prompts, err := loader.ListPrompts()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to list prompts: %w", err))
+			}
+
+			var output []map[string]interface{}
+			for _, p := range prompts {
+				output = append(output, map[string]interface{}{
+					"id":       p.ID,
+					"name":     p.Name,
+					"version":  p.Version,
+					"category": p.Category,
+					"tags":     p.Tags,
+				})
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":      true,
+				"count":   len(prompts),
+				"prompts": output,
+			})
+		},
+	}
+
+	var promptShowID string
+	promptShowCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show a specific prompt",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if promptShowID == "" && len(args) > 0 {
+				promptShowID = args[0]
+			}
+			if promptShowID == "" {
+				return printErrorJSON(fmt.Errorf("prompt ID is required"))
+			}
+
+			loader := resources.NewLoader("")
+			prompt, err := loader.LoadPrompt(promptShowID)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to load prompt: %w", err))
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":       true,
+				"id":       prompt.ID,
+				"name":     prompt.Name,
+				"version":  prompt.Version,
+				"category": prompt.Category,
+				"tags":     prompt.Tags,
+				"body":     prompt.Body,
+			})
+		},
+	}
+	promptShowCmd.Flags().StringVar(&promptShowID, "id", "", "Prompt ID to show")
+
+	promptCmd.AddCommand(promptListCmd)
+	promptCmd.AddCommand(promptShowCmd)
+
+	// Pack commands
+	packCmd := &cobra.Command{
+		Use:   "pack",
+		Short: "Manage context packs",
+	}
+
+	packListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List available context packs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			loader := resources.NewLoader("")
+			packs, err := loader.ListPacks()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to list packs: %w", err))
+			}
+
+			var output []map[string]interface{}
+			for _, p := range packs {
+				output = append(output, map[string]interface{}{
+					"id":                     p.ID,
+					"name":                   p.Name,
+					"version":                p.Version,
+					"category":               p.Category,
+					"description":            p.Description,
+					"total_estimated_tokens": p.TotalEstimatedTokens,
+					"slices_count":           len(p.Slices),
+				})
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":    true,
+				"count": len(packs),
+				"packs": output,
+			})
+		},
+	}
+
+	var packShowID string
+	packShowCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show a specific context pack",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if packShowID == "" && len(args) > 0 {
+				packShowID = args[0]
+			}
+			if packShowID == "" {
+				return printErrorJSON(fmt.Errorf("pack ID is required"))
+			}
+
+			loader := resources.NewLoader("")
+			pack, err := loader.LoadPack(packShowID)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to load pack: %w", err))
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":                     true,
+				"id":                     pack.ID,
+				"name":                   pack.Name,
+				"version":                pack.Version,
+				"category":               pack.Category,
+				"description":            pack.Description,
+				"flexibility":            pack.Flexibility,
+				"total_estimated_tokens": pack.TotalEstimatedTokens,
+				"slices":                 pack.Slices,
+			})
+		},
+	}
+	packShowCmd.Flags().StringVar(&packShowID, "id", "", "Pack ID to show")
+
+	packCmd.AddCommand(packListCmd)
+	packCmd.AddCommand(packShowCmd)
+
+	// Encode command
+	encodeCmd := &cobra.Command{
+		Use:   "encode",
+		Short: "Encode data for LLM input",
+	}
+
+	var encodeConvoID int
+	var encodeStdout bool
+	var encodeOutput string
+
+	encodeConvoCmd := &cobra.Command{
+		Use:   "conversation",
+		Short: "Encode a conversation for LLM input",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if encodeConvoID <= 0 {
+				return printErrorJSON(fmt.Errorf("--conversation-id is required"))
+			}
+
+			cfg := config.Load()
+
+			if encodeStdout {
+				result := encoding.EncodeConversationToString(cfg.EveDBPath, encodeConvoID)
+				if result.Error != "" {
+					return printErrorJSON(fmt.Errorf("%s", result.Error))
+				}
+				fmt.Println(result.EncodedText)
+				return nil
+			}
+
+			outputPath := encodeOutput
+			if outputPath == "" {
+				outputPath = encoding.GetDefaultOutputPath(encodeConvoID)
+			}
+
+			result := encoding.EncodeConversationToFile(cfg.EveDBPath, encodeConvoID, outputPath)
+			if result.Error != "" {
+				return printErrorJSON(fmt.Errorf("%s", result.Error))
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":              true,
+				"conversation_id": encodeConvoID,
+				"output_path":     outputPath,
+				"message_count":   result.MessageCount,
+				"token_count":     result.TokenCount,
+			})
+		},
+	}
+
+	encodeConvoCmd.Flags().IntVar(&encodeConvoID, "conversation-id", 0, "Conversation ID to encode")
+	encodeConvoCmd.Flags().BoolVar(&encodeStdout, "stdout", false, "Output to stdout instead of file")
+	encodeConvoCmd.Flags().StringVar(&encodeOutput, "output", "", "Output file path")
+
+	encodeCmd.AddCommand(encodeConvoCmd)
+
+	// Resources command
+	resourcesCmd := &cobra.Command{
+		Use:   "resources",
+		Short: "Manage embedded resources",
+	}
+
+	var exportDir string
+	resourcesExportCmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export embedded prompts and packs to a directory",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if exportDir == "" {
+				return printErrorJSON(fmt.Errorf("--dir is required"))
+			}
+
+			loader := resources.NewLoader("")
+			promptCount, packCount, err := loader.ExportResources(exportDir)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to export resources: %w", err))
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":            true,
+				"target_dir":    exportDir,
+				"prompts_count": promptCount,
+				"packs_count":   packCount,
+			})
+		},
+	}
+	resourcesExportCmd.Flags().StringVar(&exportDir, "dir", "", "Target directory for export")
+
+	resourcesCmd.AddCommand(resourcesExportCmd)
+
+	// Whoami command - returns user info (name, phone, email)
+	whoamiCmd := &cobra.Command{
+		Use:   "whoami",
+		Short: "Display information about the current user",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Get macOS user full name
+			fullName := ""
+			if out, err := exec.Command("id", "-F").Output(); err == nil {
+				fullName = strings.TrimSpace(string(out))
+			}
+
+			// Get user's accounts from chat.db (phones and emails used for sending)
+			chatDBPath := etl.GetChatDBPath()
+			var phones []string
+			var emails []string
+
+			if chatDBPath != "" {
+				chatDB, err := sql.Open("sqlite3", chatDBPath+"?mode=ro")
+				if err == nil {
+					defer chatDB.Close()
+
+					// Query distinct accounts from outgoing messages
+					rows, err := chatDB.Query(`
+						SELECT DISTINCT account 
+						FROM message 
+						WHERE is_from_me = 1 
+						  AND account IS NOT NULL 
+						  AND account != ''
+					`)
+					if err == nil {
+						for rows.Next() {
+							var account string
+							if err := rows.Scan(&account); err == nil {
+								// Parse account format: P:+1xxx or E:email@example.com
+								if strings.HasPrefix(account, "P:") {
+									phone := strings.TrimPrefix(account, "P:")
+									if phone != "" && !contains(phones, phone) {
+										phones = append(phones, phone)
+									}
+								} else if strings.HasPrefix(account, "E:") {
+									email := strings.TrimPrefix(account, "E:")
+									if email != "" && !contains(emails, email) {
+										emails = append(emails, email)
+									}
+								}
+							}
+						}
+						rows.Close()
+					}
+				}
+			}
+
+			output := map[string]interface{}{
+				"ok":     true,
+				"name":   fullName,
+				"phones": phones,
+				"emails": emails,
+			}
+
+			return printJSON(output)
+		},
+	}
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(computeCmd)
+	rootCmd.AddCommand(dbCmd)
+	rootCmd.AddCommand(promptCmd)
+	rootCmd.AddCommand(packCmd)
+	rootCmd.AddCommand(encodeCmd)
+	rootCmd.AddCommand(resourcesCmd)
+	rootCmd.AddCommand(whoamiCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1325,4 +1680,13 @@ func printErrorJSON(err error) error {
 		return fmt.Errorf("failed to encode error JSON: %w", encErr)
 	}
 	return err
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

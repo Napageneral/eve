@@ -1,37 +1,64 @@
-# Eve
+# 💬 Eve — iMessage Analysis & Embeddings
 
-**Eve** is a single Go binary for iMessage analysis and embeddings. It copies data from macOS Messages (`chat.db`) into a local SQLite warehouse (`eve.db`), then runs conversation analysis and embeddings using Gemini.
+A macOS CLI to sync, analyze, and embed your iMessage conversations using Gemini. Copies data from Messages.app (`chat.db`) into a local SQLite warehouse (`eve.db`), then runs LLM analysis and generates embeddings.
 
-## Architecture
+## Features
 
-- **Single binary**: `eve` — pure Go, no Python/Node runtime required
-- **ETL**: Copies handles, chats, messages, attachments from `chat.db` → `eve.db`
-- **Conversations**: Automatically groups messages into conversations (3-hour gap threshold)
-- **Compute engine**: Durable job queue + worker pool for Gemini analysis/embeddings
-- **JSON output**: All commands output stable JSON (no message text by default for privacy)
+* **ETL Pipeline**: Sync handles, chats, messages, attachments from `chat.db` → `eve.db`
+* **Conversation Grouping**: Automatically groups messages into conversations (3-hour gap threshold)
+* **LLM Analysis**: Run conversation analysis using Gemini (entities, topics, emotions, humor)
+* **Embeddings**: Generate vector embeddings for semantic search
+* **Durable Queue**: Reliable job queue with retry logic and adaptive rate limiting
+* **JSON Output**: All commands emit stable JSON (no message text by default for privacy)
+* **Single Binary**: Pure Go, no Python/Node runtime required
 
-## Installation
+## Requirements
+
+* macOS 14+ with Messages.app signed in
+* Full Disk Access for your terminal to read `~/Library/Messages/chat.db`
+* Gemini API key (for analysis and embeddings)
+
+## Install
+
+### Homebrew (recommended)
 
 ```bash
-go build -o bin/eve ./cmd/eve
+brew install brandtty/tap/eve
 ```
 
-Or use `make go-build`
+### Go Install
 
-## Usage
+```bash
+go install github.com/brandtty/eve/cmd/eve@latest
+```
 
-### Initialize databases
+### Build from Source
+
+```bash
+git clone https://github.com/brandtty/eve.git
+cd eve
+make build
+# binary at ./bin/eve
+```
+
+## Commands
+
+### Initialize
 
 ```bash
 eve init
 ```
 
-Creates `eve.db` (warehouse) and `eve-queue.db` (durable queue) with schema migrations.
+Creates `eve.db` (warehouse) and `eve-queue.db` (job queue) with schema migrations.
 
-### Sync data from Messages
+### Sync Messages
 
 ```bash
+# Full sync
 eve sync
+
+# Dry run (count messages without syncing)
+eve sync --dry-run
 ```
 
 Copies all data from `chat.db` → `eve.db`:
@@ -39,58 +66,153 @@ Copies all data from `chat.db` → `eve.db`:
 - Chats → chats
 - Messages → messages (incremental via watermark)
 - Attachments → attachments
-- Builds conversations from messages
+- Auto-builds conversations from messages
 
-Supports incremental sync: only syncs new messages since last run.
+### Query Database
 
-Use `--dry-run` to count messages without copying.
+```bash
+# Count messages
+eve db query --sql "SELECT COUNT(*) FROM messages"
 
-### Run compute jobs
+# List recent chats
+eve db query --sql "SELECT id, chat_name, total_messages FROM chats ORDER BY last_message_date DESC LIMIT 10"
+
+# Write operations (use with caution)
+eve db query --sql "UPDATE ..." --write
+```
+
+### Run Compute Jobs
 
 ```bash
 # Check queue status
 eve compute status
 
 # Process queued jobs
-eve compute run --workers 10
+eve compute run --workers 10 --timeout 300
 ```
 
-#### Gemini quota / rate limits
+### Test Analysis
 
-Eve will **smooth** outbound Gemini traffic to avoid spiky bursts (which can cause 429s and even flaky home routers/Wi‑Fi to fall over).
+```bash
+# Run analysis on your biggest chat
+eve compute test-analysis --limit 10
 
-Set these environment variables to match your Gemini quota tier:
+# Run on a specific chat
+eve compute test-analysis --chat-id 123 --workers 50
+```
 
-- `GEMINI_API_KEY`: required
-- `EVE_GEMINI_ANALYSIS_RPM`: max analysis requests per minute (default: `0` = auto)
-- `EVE_GEMINI_EMBED_RPM`: max embedding requests per minute (default: `0` = auto)
+### Test Embeddings
 
-Example (Tier 3-ish defaults you mentioned):
+```bash
+# Generate embeddings for your biggest chat
+eve compute test-embeddings --limit-conversations 10
+
+# Run on a specific chat
+eve compute test-embeddings --chat-id 123
+```
+
+### Manage Prompts & Packs
+
+```bash
+# List available prompts
+eve prompt list
+
+# Show a specific prompt
+eve prompt show convo-all-v1
+
+# List context packs
+eve pack list
+
+# Export embedded resources
+eve resources export --dir ./my-resources
+```
+
+### Encode Conversations
+
+```bash
+# Encode to file
+eve encode conversation --conversation-id 123
+
+# Encode to stdout
+eve encode conversation --conversation-id 123 --stdout
+```
+
+### Utility
+
+```bash
+# Show paths
+eve paths
+
+# Show version
+eve version
+```
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GEMINI_API_KEY` | Gemini API key (required for compute) | — |
+| `EVE_APP_DIR` | Override app directory | `~/Library/Application Support/Eve` |
+| `EVE_GEMINI_ANALYSIS_RPM` | Max analysis requests/min | `0` (auto) |
+| `EVE_GEMINI_EMBED_RPM` | Max embedding requests/min | `0` (auto) |
+| `EVE_GEMINI_ANALYSIS_MODEL` | Analysis model | `gemini-2.0-flash` |
+| `EVE_GEMINI_EMBED_MODEL` | Embedding model | `gemini-embedding-001` |
+
+## Rate Limiting
+
+Eve has built-in adaptive rate limiting to avoid hitting Gemini quotas:
+
+- **Auto RPM**: When `*_RPM` is `0`, Eve probes the API and auto-adjusts
+- **Adaptive Controller**: Backs off on 429s/timeouts, ramps up when stable
+- **Smooth Traffic**: Prevents burst spikes that can overwhelm home routers
+
+Example for high-quota tiers:
 
 ```bash
 export EVE_GEMINI_ANALYSIS_RPM=20000
 export EVE_GEMINI_EMBED_RPM=20000
 ```
 
-In addition, `eve compute run` has an **adaptive in-flight controller** that automatically backs off when it sees 429s/timeouts/connection resets, and ramps back up when stable.
+## Permissions Troubleshooting
 
-### View paths
+If you see "unable to open database file" or empty output:
 
-```bash
-eve paths
-```
+1. **Full Disk Access**: System Settings → Privacy & Security → Full Disk Access → add your terminal
+2. Ensure Messages.app is signed in and `~/Library/Messages/chat.db` exists
 
-Shows where `eve.db`, `eve-queue.db`, and config are stored.
+## Database Schema
+
+Eve creates a normalized warehouse with these tables:
+
+- `contacts` — resolved people (includes "Me" where `is_me=1`)
+- `contact_identifiers` — phone/email identifiers mapped to contacts
+- `chats` — conversation threads
+- `chat_participants` — join table for group chats
+- `conversations` — message windows (3-hour gap heuristic)
+- `messages` — normalized messages
+- `attachments` — attachment metadata
+- `reactions` — tapback/reactions
+- `conversation_analyses` — LLM analysis results
+- `embeddings` — vector embeddings
 
 ## Development
 
 ```bash
-# Run all tests
+# Run tests
 make test
 
-# Run Go tests only
-make go-test
-
 # Build binary
-make go-build
+make build
+
+# Format code
+go fmt ./...
 ```
+
+## License
+
+MIT
+
+## See Also
+
+- [imsg](https://github.com/steipete/imsg) — CLI for sending/receiving iMessages
+- [gogcli](https://github.com/steipete/gogcli) — CLI for Galaxy of Games

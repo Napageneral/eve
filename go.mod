@@ -1,4 +1,4 @@
-module github.com/tylerchilds/eve
+module github.com/brandtty/eve
 
 go 1.23
 

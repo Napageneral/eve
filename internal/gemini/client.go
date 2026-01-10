@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/tylerchilds/eve/internal/ratelimit"
+	"github.com/brandtty/eve/internal/ratelimit"
 )
 
 const (

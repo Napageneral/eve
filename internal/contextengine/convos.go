@@ -7,7 +7,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/tylerchilds/eve/internal/encoding"
+	"github.com/brandtty/eve/internal/encoding"
 )
 
 // convosContextDataAdapter retrieves raw conversation text with flexible filtering

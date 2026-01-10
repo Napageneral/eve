@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tylerchilds/eve/internal/queue"
+	"github.com/brandtty/eve/internal/queue"
 )
 
 // JobHandler processes a single job

@@ -9,8 +9,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/tylerchilds/eve/internal/migrate"
-	"github.com/tylerchilds/eve/internal/queue"
+	"github.com/brandtty/eve/internal/migrate"
+	"github.com/brandtty/eve/internal/queue"
 )
 
 func setupTestQueue(t *testing.T) (*sql.DB, *queue.Queue) {

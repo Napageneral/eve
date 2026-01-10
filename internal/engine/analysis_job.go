@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tylerchilds/eve/internal/db"
-	"github.com/tylerchilds/eve/internal/encoding"
-	"github.com/tylerchilds/eve/internal/gemini"
-	"github.com/tylerchilds/eve/internal/queue"
+	"github.com/brandtty/eve/internal/db"
+	"github.com/brandtty/eve/internal/encoding"
+	"github.com/brandtty/eve/internal/gemini"
+	"github.com/brandtty/eve/internal/queue"
 )
 
 // AnalysisJobPayload is the payload for conversation analysis jobs
