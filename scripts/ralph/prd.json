@@ -42,7 +42,7 @@
         "Add a short README in resources/ explaining override strategy for skills"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "files": ["resources/**"],
       "notes": "These files will later be embedded into the Go binary, but also overrideable from disk."
     },

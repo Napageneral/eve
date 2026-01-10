@@ -25,6 +25,13 @@ Phase: go-cli-context-engine
 
 ## Notes / Learnings (append after each story)
 
+### EVGO-000 (completed manually 2026-01-10)
+- Added go.mod for github.com/tylerchilds/eve (Go 1.22)
+- Added cmd/eve/main.go with cobra CLI skeleton
+- Commands: version, init, db query, compute run, prompt list, pack list, encode conversation
+- Added Makefile targets: go-build, go-test
+- Skill doc renamed from eve-db.md to eve.md
+
 ### EVGO-000: Bootstrap Go module + CLI skeleton (2026-01-10)
 - Established `github.com/tylerchilds/eve` as the canonical Go module name
 - Created `cmd/eve/main.go` with cobra CLI framework and `eve version` subcommand (JSON output)
@@ -33,3 +40,16 @@ Phase: go-cli-context-engine
 - Note: The main.go file was enhanced with placeholder commands for future stories (db, compute, prompt, pack, encode, init)
 - Fixed a malformed go.sum entry that was blocking module installation
 
+### EVGO-018: Resources consolidation (2026-01-10)
+- Created `resources/prompts/` and `resources/packs/` directories
+- Copied all 31 prompt files (*.prompt.md) from ts/eve/prompts preserving subdirectory structure (analysis/, chat/, documents/, fun/, intelligence/, intentions/, test/, tools/, ui/)
+- Copied all 22 pack files (*.pack.yaml) from ts/eve/context-packs preserving subdirectory structure (global/)
+- Also copied some non-conforming files (InteractionAgent.md, agents.md, AGENTS.md, dynamic/*.ts) for completeness
+- Added comprehensive resources/README.md explaining:
+  - Embedded defaults via embed.FS
+  - Override strategy with --resources-dir flag and EVE_RESOURCES_DIR env var
+  - File formats (YAML frontmatter for prompts, YAML for packs)
+  - Usage commands for listing/showing prompts and packs
+  - Philosophy: resources are data, not code (editable, versionable, shippable with skills)
+- Verification passed with no test changes needed (no Go tests yet depend on resources)
+- Resources directory now becomes canonical; ts/ paths are reference material only
