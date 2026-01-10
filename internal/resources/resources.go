@@ -220,3 +220,97 @@ func parsePack(path string, content []byte) (Pack, error) {
 
 	return pack, nil
 }
+
+// ExportResources exports embedded resources to a directory
+func (l *Loader) ExportResources(targetDir string) (int, int, error) {
+	promptCount := 0
+	packCount := 0
+
+	// Export prompts
+	promptsTargetDir := filepath.Join(targetDir, "prompts")
+	if err := os.MkdirAll(promptsTargetDir, 0755); err != nil {
+		return 0, 0, fmt.Errorf("failed to create prompts dir: %w", err)
+	}
+
+	err := fs.WalkDir(embeddedFS, "embedded_prompts", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		// Read from embedded FS
+		content, err := embeddedFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		// Map embedded_prompts/... -> prompts/...
+		relPath := strings.TrimPrefix(path, "embedded_prompts/")
+		targetPath := filepath.Join(promptsTargetDir, relPath)
+
+		// Create subdirectories if needed
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return err
+		}
+
+		// Write file
+		if err := os.WriteFile(targetPath, content, 0644); err != nil {
+			return err
+		}
+
+		promptCount++
+		return nil
+	})
+
+	if err != nil {
+		return promptCount, packCount, fmt.Errorf("failed to export prompts: %w", err)
+	}
+
+	// Export packs
+	packsTargetDir := filepath.Join(targetDir, "packs")
+	if err := os.MkdirAll(packsTargetDir, 0755); err != nil {
+		return promptCount, packCount, fmt.Errorf("failed to create packs dir: %w", err)
+	}
+
+	err = fs.WalkDir(embeddedFS, "embedded_packs", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		// Read from embedded FS
+		content, err := embeddedFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		// Map embedded_packs/... -> packs/...
+		relPath := strings.TrimPrefix(path, "embedded_packs/")
+		targetPath := filepath.Join(packsTargetDir, relPath)
+
+		// Create subdirectories if needed
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return err
+		}
+
+		// Write file
+		if err := os.WriteFile(targetPath, content, 0644); err != nil {
+			return err
+		}
+
+		packCount++
+		return nil
+	})
+
+	if err != nil {
+		return promptCount, packCount, fmt.Errorf("failed to export packs: %w", err)
+	}
+
+	return promptCount, packCount, nil
+}

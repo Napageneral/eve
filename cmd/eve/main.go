@@ -338,12 +338,50 @@ then optionally runs high-throughput conversation analysis + embeddings.`,
 	contextCompileCmd.Flags().IntVar(&contextBudget, "budget", 0, "Token budget (default: 300000)")
 	contextCmd.AddCommand(contextCompileCmd)
 
+	// eve resources (subcommand group)
+	resourcesCmd := &cobra.Command{
+		Use:   "resources",
+		Short: "Resource management operations",
+	}
+
+	// eve resources export
+	var exportDir string
+	resourcesExportCmd := &cobra.Command{
+		Use:   "export --dir <path>",
+		Short: "Export embedded resources to disk",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if exportDir == "" {
+				return fmt.Errorf("--dir flag is required")
+			}
+
+			loader := resources.NewLoader("")
+			promptCount, packCount, err := loader.ExportResources(exportDir)
+			if err != nil {
+				return fmt.Errorf("failed to export resources: %w", err)
+			}
+
+			result := map[string]interface{}{
+				"success":      true,
+				"target_dir":   exportDir,
+				"prompt_count": promptCount,
+				"pack_count":   packCount,
+				"total_count":  promptCount + packCount,
+			}
+
+			out, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(out))
+			return nil
+		},
+	}
+	resourcesExportCmd.Flags().StringVar(&exportDir, "dir", "", "Target directory for exported resources (required)")
+	resourcesCmd.AddCommand(resourcesExportCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(dbCmd)
 	rootCmd.AddCommand(computeCmd)
 	rootCmd.AddCommand(promptCmd)
 	rootCmd.AddCommand(packCmd)
+	rootCmd.AddCommand(resourcesCmd)
 	rootCmd.AddCommand(encodeCmd)
 	rootCmd.AddCommand(contextCmd)
 
