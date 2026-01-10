@@ -7,12 +7,16 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+	"github.com/tylerchilds/eve/internal/resources"
 )
 
 var (
 	version   = "dev"
 	commit    = "none"
 	buildDate = "unknown"
+
+	// Global flag for resources directory override
+	resourcesDir string
 )
 
 func main() {
@@ -22,6 +26,9 @@ func main() {
 		Long: `Eve ingests iMessage + contacts into a local SQLite database (eve.db),
 then optionally runs high-throughput conversation analysis + embeddings.`,
 	}
+
+	// Add global --resources-dir flag with env var fallback
+	rootCmd.PersistentFlags().StringVar(&resourcesDir, "resources-dir", os.Getenv("EVE_RESOURCES_DIR"), "Override directory for prompts and packs (default: embedded resources)")
 
 	// eve version
 	versionCmd := &cobra.Command{
@@ -96,16 +103,47 @@ then optionally runs high-throughput conversation analysis + embeddings.`,
 		Short: "Prompt resource operations",
 	}
 
-	// eve prompt list (placeholder)
+	// eve prompt list
 	promptListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available prompts",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println(`{"status": "not_implemented", "message": "eve prompt list coming soon"}`)
+			loader := resources.NewLoader(resourcesDir)
+			prompts, err := loader.ListPrompts()
+			if err != nil {
+				return fmt.Errorf("failed to list prompts: %w", err)
+			}
+
+			result := map[string]interface{}{
+				"count":   len(prompts),
+				"prompts": prompts,
+			}
+			out, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(out))
 			return nil
 		},
 	}
+
+	// eve prompt show
+	promptShowCmd := &cobra.Command{
+		Use:   "show [id]",
+		Short: "Show a specific prompt by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			loader := resources.NewLoader(resourcesDir)
+			prompt, err := loader.LoadPrompt(args[0])
+			if err != nil {
+				return fmt.Errorf("failed to load prompt: %w", err)
+			}
+
+			out, _ := json.MarshalIndent(prompt, "", "  ")
+			fmt.Println(string(out))
+			return nil
+		},
+	}
+
 	promptCmd.AddCommand(promptListCmd)
+	promptCmd.AddCommand(promptShowCmd)
 
 	// eve pack (subcommand group)
 	packCmd := &cobra.Command{
@@ -113,16 +151,47 @@ then optionally runs high-throughput conversation analysis + embeddings.`,
 		Short: "Context pack operations",
 	}
 
-	// eve pack list (placeholder)
+	// eve pack list
 	packListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available context packs",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println(`{"status": "not_implemented", "message": "eve pack list coming soon"}`)
+			loader := resources.NewLoader(resourcesDir)
+			packs, err := loader.ListPacks()
+			if err != nil {
+				return fmt.Errorf("failed to list packs: %w", err)
+			}
+
+			result := map[string]interface{}{
+				"count": len(packs),
+				"packs": packs,
+			}
+			out, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(out))
 			return nil
 		},
 	}
+
+	// eve pack show
+	packShowCmd := &cobra.Command{
+		Use:   "show [id]",
+		Short: "Show a specific pack by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			loader := resources.NewLoader(resourcesDir)
+			pack, err := loader.LoadPack(args[0])
+			if err != nil {
+				return fmt.Errorf("failed to load pack: %w", err)
+			}
+
+			out, _ := json.MarshalIndent(pack, "", "  ")
+			fmt.Println(string(out))
+			return nil
+		},
+	}
+
 	packCmd.AddCommand(packListCmd)
+	packCmd.AddCommand(packShowCmd)
 
 	// eve encode (subcommand group)
 	encodeCmd := &cobra.Command{
