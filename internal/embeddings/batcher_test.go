@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/brandtty/eve/internal/gemini"
+	"github.com/Napageneral/eve/internal/gemini"
 )
 
 func TestBatcher_SizeBasedFlush(t *testing.T) {

@@ -3,7 +3,7 @@ package contextengine
 import (
 	"fmt"
 
-	"github.com/brandtty/eve/internal/resources"
+	"github.com/Napageneral/eve/internal/resources"
 )
 
 // Engine compiles context packs into hidden parts + visible prompt

@@ -23,19 +23,19 @@ A macOS CLI to sync, analyze, and embed your iMessage conversations using Gemini
 ### Homebrew (recommended)
 
 ```bash
-brew install brandtty/tap/eve
+brew install Napageneral/tap/eve
 ```
 
 ### Go Install
 
 ```bash
-go install github.com/brandtty/eve/cmd/eve@latest
+go install github.com/Napageneral/eve/cmd/eve@latest
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/brandtty/eve.git
+git clone https://github.com/Napageneral/eve.git
 cd eve
 make build
 # binary at ./bin/eve

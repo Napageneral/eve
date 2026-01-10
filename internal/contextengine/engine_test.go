@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/brandtty/eve/internal/resources"
+	"github.com/Napageneral/eve/internal/resources"
 )
 
 func TestStaticSnippetAdapter(t *testing.T) {

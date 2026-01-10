@@ -1,4 +1,4 @@
-module github.com/brandtty/eve
+module github.com/Napageneral/eve
 
 go 1.23
 

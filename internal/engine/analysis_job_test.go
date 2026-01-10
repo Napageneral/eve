@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/brandtty/eve/internal/gemini"
-	"github.com/brandtty/eve/internal/queue"
+	"github.com/Napageneral/eve/internal/gemini"
+	"github.com/Napageneral/eve/internal/queue"
 )
 
 func setupAnalysisTestDB(t *testing.T) (*sql.DB, func()) {
