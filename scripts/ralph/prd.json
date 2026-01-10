@@ -191,7 +191,7 @@
         "Unit test exports to temp dir and checks for a known file"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "files": [
         "cmd/eve/main.go",
         "internal/resources/**"

@@ -299,3 +299,24 @@ Phase: go-cli-context-engine
   - All tests pass with synthetic fixtures (no real user data)
 - Registered adapter in retrievalAdapters registry as "analyses_context_data"
 - This adapter enables packs like analyses-all-comprehensive to load structured analysis context from the database
+
+### EVGO-026: Resources UX - eve resources export (2026-01-10)
+- Added `ExportResources` method to resources.Loader:
+  - Exports embedded prompts and packs to a target directory
+  - Preserves directory structure (prompts/..., packs/...)
+  - Walks embedded_prompts and embedded_packs from embed.FS
+  - Creates subdirectories as needed
+  - Returns counts of exported prompts and packs
+- Added `eve resources export` CLI command:
+  - Required flag: --dir <path> (target directory for export)
+  - JSON-only stdout with success status, target_dir, prompt_count, pack_count, total_count
+  - Uses resources.NewLoader with empty path (embedded resources only)
+- Unit test in `export_test.go`:
+  - TestExportResources: exports to temp dir, verifies directory creation
+  - Checks for known files: test/test-v1.prompt.md and test-static.pack.yaml
+  - Validates non-zero counts for prompts and packs
+- This command enables:
+  - Users to export embedded resources for local customization
+  - Skills to ship editable prompt/pack resources
+  - Agents to inspect and modify resources without reading Go source code
+- All tests pass
