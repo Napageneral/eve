@@ -58,7 +58,7 @@
         "Unit tests cover loading convo-all-v1 prompt and analyses-all-comprehensive pack from embedded FS"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "files": ["internal/resources/**", "cmd/eve/main.go"],
       "notes": "This is the portability core: binary works standalone; skills can ship editable resources."
     },
@@ -74,7 +74,7 @@
         "Unit tests validate command output shape (no full snapshot needed)"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "files": ["cmd/eve/main.go", "internal/resources/**"],
       "notes": "This replaces the TS context-engine CLI for discovery."
     },

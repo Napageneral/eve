@@ -28,3 +28,7 @@ central.db
 # Editor
 .vscode/
 .idea/
+
+# Embedded resource copies (generated from resources/)
+/internal/resources/embedded_prompts/
+/internal/resources/embedded_packs/

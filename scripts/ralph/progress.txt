@@ -53,3 +53,23 @@ Phase: go-cli-context-engine
   - Philosophy: resources are data, not code (editable, versionable, shippable with skills)
 - Verification passed with no test changes needed (no Go tests yet depend on resources)
 - Resources directory now becomes canonical; ts/ paths are reference material only
+
+### EVGO-019: Go resources loader (2026-01-10)
+- Implemented `internal/resources` package with embed.FS for resources/prompts and resources/packs
+- Added symlinks in internal/resources/ (embedded_prompts -> ../../resources/prompts, embedded_packs -> ../../resources/packs) for embed.FS to work
+- Symlinks are gitignored since they're build-time artifacts
+- Loader supports both embedded resources and override directory via --resources-dir flag and EVE_RESOURCES_DIR env var
+- Prompt parsing: splits on --- delimiters, parses YAML frontmatter into structured Prompt{ID, Name, Version, Category, Tags, Frontmatter, Body}
+- Pack parsing: unmarshals YAML into typed Pack{ID, Name, Slices...} with typed Slice structs
+- Added gopkg.in/yaml.v3 dependency for YAML parsing
+- Implemented ListPrompts/LoadPrompt and ListPacks/LoadPack methods on Loader
+- Updated cmd/eve/main.go to add global --resources-dir flag with EVE_RESOURCES_DIR fallback
+- Implemented `eve prompt list`, `eve prompt show [id]`, `eve pack list`, `eve pack show [id]` commands
+- All CLI output is JSON-only (no message text printed unless explicitly requested)
+- Unit tests cover:
+  - Loading convo-all-v1 prompt from embedded FS (validates ID, name, category, tags, body content)
+  - Loading analyses-all-comprehensive pack from embedded FS (validates ID, name, slices, retrieval params)
+  - Listing prompts and packs (validates count > 20 prompts, > 15 packs)
+  - Override directory support (creates temp dir with custom prompt, validates loading)
+- Key learning: embed.FS cannot use .. in paths, so symlinks are necessary to embed files from parent directories
+- EVGO-020 is effectively already complete since we implemented eve prompt/pack list/show commands as part of this story
