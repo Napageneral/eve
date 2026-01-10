@@ -27,7 +27,12 @@
       ],
       "priority": 1,
       "passes": true,
-      "files": ["go.mod", "cmd/eve/main.go", "Makefile", "scripts/ralph/verify.sh"],
+      "files": [
+        "go.mod",
+        "cmd/eve/main.go",
+        "Makefile",
+        "scripts/ralph/verify.sh"
+      ],
       "notes": "DONE: Go module + CLI skeleton in place. This repo currently has Python/TS. We are evolving it in-place into Go-first; deletions come later."
     },
     {
@@ -43,7 +48,9 @@
       ],
       "priority": 2,
       "passes": true,
-      "files": ["resources/**"],
+      "files": [
+        "resources/**"
+      ],
       "notes": "These files will later be embedded into the Go binary, but also overrideable from disk."
     },
     {
@@ -59,7 +66,10 @@
       ],
       "priority": 3,
       "passes": true,
-      "files": ["internal/resources/**", "cmd/eve/main.go"],
+      "files": [
+        "internal/resources/**",
+        "cmd/eve/main.go"
+      ],
       "notes": "This is the portability core: binary works standalone; skills can ship editable resources."
     },
     {
@@ -75,7 +85,10 @@
       ],
       "priority": 4,
       "passes": true,
-      "files": ["cmd/eve/main.go", "internal/resources/**"],
+      "files": [
+        "cmd/eve/main.go",
+        "internal/resources/**"
+      ],
       "notes": "This replaces the TS context-engine CLI for discovery."
     },
     {
@@ -91,7 +104,10 @@
       ],
       "priority": 5,
       "passes": true,
-      "files": ["cmd/eve/main.go", "internal/db/**"],
+      "files": [
+        "cmd/eve/main.go",
+        "internal/db/**"
+      ],
       "notes": "Raw SQL only; no ORMs. This becomes the #1 agent access primitive."
     },
     {
@@ -106,7 +122,9 @@
       ],
       "priority": 6,
       "passes": true,
-      "files": ["cmd/eve/main.go"],
+      "files": [
+        "cmd/eve/main.go"
+      ],
       "notes": "This should become the canonical encoding path (TS encoding becomes reference only)."
     },
     {
@@ -122,7 +140,10 @@
       ],
       "priority": 7,
       "passes": true,
-      "files": ["internal/contextengine/**", "cmd/eve/main.go"],
+      "files": [
+        "internal/contextengine/**",
+        "cmd/eve/main.go"
+      ],
       "notes": "Budget fitting can be v1: error if over budget."
     },
     {
@@ -136,7 +157,10 @@
       ],
       "priority": 8,
       "passes": true,
-      "files": ["internal/contextengine/**", "internal/db/**"],
+      "files": [
+        "internal/contextengine/**",
+        "internal/db/**"
+      ],
       "notes": "No vector search required for v1; similarity ordering can be TODO."
     },
     {
@@ -149,8 +173,11 @@
         "Unit tests use synthetic eve.db and validate included sections"
       ],
       "priority": 9,
-      "passes": false,
-      "files": ["internal/contextengine/**", "internal/db/**"],
+      "passes": true,
+      "files": [
+        "internal/contextengine/**",
+        "internal/db/**"
+      ],
       "notes": "Keep output as text (LLM-ready), returned as hidden part."
     },
     {
@@ -165,9 +192,11 @@
       ],
       "priority": 10,
       "passes": false,
-      "files": ["cmd/eve/main.go", "internal/resources/**"],
+      "files": [
+        "cmd/eve/main.go",
+        "internal/resources/**"
+      ],
       "notes": "This is how skills ship resources and users customize them."
     }
   ]
 }
-

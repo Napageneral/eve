@@ -267,3 +267,35 @@ Phase: go-cli-context-engine
   - Updated adapters.go registry to remove analyses_context_data (will re-add in EVGO-025)
 - This implementation is now feature-complete and matches the TypeScript reference implementation
 - Similarity ordering (simAsc, simDesc) is still TODO - requires vector embeddings (noted in code comments)
+### EVGO-025: Go retrieval adapter - analyses_context_data (DB-backed facets) (2026-01-10)
+- Implemented `analysesContextDataAdapter` in `analyses.go`:
+  - Retrieves structured analysis data (summary, topics, entities, emotions, humor) from eve.db facet tables
+  - Supports chat_ids filtering and contact_ids expansion (reuses helper functions)
+  - Time filtering with presets and explicit dates (reuses time parsing logic)
+  - Ordering support: timeAsc/timeDesc
+  - Token budget: token_max parameter stops loading when budget is reached
+  - Include filter: allows selecting which facets to include (summary, topics, entities, emotions, humor)
+  - Default include: all facets if not specified
+- Format output matches backend format_analysis_block exactly:
+  - Header: ### YYYY-MM-DD — Conversation <id>
+  - Summary: <text> (if included)
+  - Topics: <comma-separated list> (unique, sorted)
+  - Entities: <comma-separated list> (unique, sorted)
+  - Emotions: <comma-separated list> (unique, sorted)
+  - Humor: (bulleted list, max 10 items)
+- Database operations:
+  - loadAnalysisData: loads conversation metadata + all facet data for given conv IDs
+  - loadFacet: helper to load facet data from a table (topics, entities, emotions, humor)
+  - formatAnalysisBlock: formats a single conversation's analysis into text
+- Helper functions (duplicated from convos for independence):
+  - parseIntSlice, parseInt, parseString: parameter parsing
+  - parseTimeParams: time filtering extraction
+  - collectChatIDsFromContacts: expands contact IDs to chat IDs
+  - filterConversationsByTime: queries conversations table with time + chat_id filters
+  - orderConversations: orders conversation IDs by start_time
+- Unit tests in `analyses_test.go`:
+  - setupAnalysesDB: creates synthetic eve.db with facet tables (topics, entities, emotions, humor)
+  - TestAnalysesAdapter: verifies full analysis data retrieval and formatting
+  - All tests pass with synthetic fixtures (no real user data)
+- Registered adapter in retrievalAdapters registry as "analyses_context_data"
+- This adapter enables packs like analyses-all-comprehensive to load structured analysis context from the database
