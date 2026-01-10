@@ -1,43 +1,96 @@
-# Eve (WIP)
+# Eve
 
-Eve is a CLI-first personal communications database: ingest iMessage + contacts into a local SQLite database (`eve.db`), then optionally run high-throughput conversation analysis + embeddings + vector search.
+**Eve** is a single Go binary for iMessage analysis and embeddings. It copies data from macOS Messages (`chat.db`) into a local SQLite warehouse (`eve.db`), then runs conversation analysis and embeddings using Gemini.
 
-This repo is a **fresh extraction** from `ChatStats/` to avoid disturbing the existing Electron app.
+## Architecture
 
-## Repo layout
+- **Single binary**: `eve` — pure Go, no Python/Node runtime required
+- **ETL**: Copies handles, chats, messages, attachments from `chat.db` → `eve.db`
+- **Conversations**: Automatically groups messages into conversations (3-hour gap threshold)
+- **Compute engine**: Durable job queue + worker pool for Gemini analysis/embeddings
+- **JSON output**: All commands output stable JSON (no message text by default for privacy)
 
-- `PLAN.md` — architecture + product plan
-- `docs/skills/eve-db.md` — agent skill: raw SQL access to `eve.db` (serverless)
-- `python/backend/` — ported Python backend (ETL, Celery tasks, FAISS, DB)
-- `ts/eve/` — ported TypeScript context engine + encoding + retrieval adapters
-
-## Status
-
-Early port: code copied over; build and packaging are not yet wired for standalone use.
-
-## Philosophy
-
-- CLI-first surface with stable JSON outputs for agents
-- Keep `eve.db` as the canonical local dataset
-- Keep Celery+Redis for throughput (enhanced mode)
-- Drop Electron/Next UI
-
-## Usage (agent-friendly)
-
-### Serverless DB access (recommended)
-
-Run raw SQL against `eve.db` and get stable JSON:
+## Installation
 
 ```bash
-eve db query --sql "SELECT COUNT(*) AS c FROM messages" --limit 1 --pretty
+go build -o bin/eve ./cmd/eve
 ```
 
-### Compute plane orchestration (optional)
+Or use `make go-build`
 
-Start/stop Redis + Context Engine + Celery (for analysis/embeddings):
+## Usage
+
+### Initialize databases
 
 ```bash
-eve compute up --pretty
-eve compute status --pretty
-eve compute down --pretty
+eve init
+```
+
+Creates `eve.db` (warehouse) and `eve-queue.db` (durable queue) with schema migrations.
+
+### Sync data from Messages
+
+```bash
+eve sync
+```
+
+Copies all data from `chat.db` → `eve.db`:
+- Handles → contacts + contact_identifiers
+- Chats → chats
+- Messages → messages (incremental via watermark)
+- Attachments → attachments
+- Builds conversations from messages
+
+Supports incremental sync: only syncs new messages since last run.
+
+Use `--dry-run` to count messages without copying.
+
+### Run compute jobs
+
+```bash
+# Check queue status
+eve compute status
+
+# Process queued jobs
+eve compute run --workers 10
+```
+
+#### Gemini quota / rate limits
+
+Eve will **smooth** outbound Gemini traffic to avoid spiky bursts (which can cause 429s and even flaky home routers/Wi‑Fi to fall over).
+
+Set these environment variables to match your Gemini quota tier:
+
+- `GEMINI_API_KEY`: required
+- `EVE_GEMINI_ANALYSIS_RPM`: max analysis requests per minute (default: `0` = auto)
+- `EVE_GEMINI_EMBED_RPM`: max embedding requests per minute (default: `0` = auto)
+
+Example (Tier 3-ish defaults you mentioned):
+
+```bash
+export EVE_GEMINI_ANALYSIS_RPM=20000
+export EVE_GEMINI_EMBED_RPM=20000
+```
+
+In addition, `eve compute run` has an **adaptive in-flight controller** that automatically backs off when it sees 429s/timeouts/connection resets, and ramps back up when stable.
+
+### View paths
+
+```bash
+eve paths
+```
+
+Shows where `eve.db`, `eve-queue.db`, and config are stored.
+
+## Development
+
+```bash
+# Run all tests
+make test
+
+# Run Go tests only
+make go-test
+
+# Build binary
+make go-build
 ```

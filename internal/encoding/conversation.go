@@ -78,7 +78,7 @@ type EncodeResult struct {
 	Error        string `json:"error,omitempty"`
 }
 
-// LoadConversation loads a conversation from the database
+// LoadConversation loads a conversation from eve.db by conversation ID
 func LoadConversation(dbPath string, conversationID int64) (*Conversation, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -86,27 +86,47 @@ func LoadConversation(dbPath string, conversationID int64) (*Conversation, error
 	}
 	defer db.Close()
 
-	// Load conversation metadata
+	// Load conversation metadata from eve.db schema
 	var conv Conversation
-	conv.ID = conversationID
+	var startTimeStr, endTimeStr string
+	convQuery := `
+		SELECT id, chat_id, start_time, end_time
+		FROM conversations
+		WHERE id = ?
+		LIMIT 1
+	`
+	err = db.QueryRow(convQuery, conversationID).Scan(
+		&conv.ID,
+		&conv.ChatID,
+		&startTimeStr,
+		&endTimeStr,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("conversation %d not found", conversationID)
+		}
+		return nil, fmt.Errorf("failed to load conversation: %w", err)
+	}
 
-	// Load messages (simplified query - adjust based on actual schema)
-	query := `
+	conv.StartTime, _ = time.Parse(time.RFC3339, startTimeStr)
+	conv.EndTime, _ = time.Parse(time.RFC3339, endTimeStr)
+
+	// Load messages for this conversation (eve.db schema)
+	msgQuery := `
 		SELECT
-			m.ROWID as id,
-			m.guid,
-			datetime(m.date / 1000000000 + strftime('%s', '2001-01-01'), 'unixepoch') as timestamp,
-			COALESCE(c.display_name, h.id, 'Unknown') as sender_name,
-			COALESCE(m.text, '') as text,
-			m.is_from_me
-		FROM message m
-		LEFT JOIN handle h ON m.handle_id = h.ROWID
-		LEFT JOIN contact c ON h.id = c.phone_number
-		WHERE m.ROWID = ?
-		ORDER BY m.date ASC
+			m.id,
+			COALESCE(m.guid, '') as guid,
+			m.timestamp,
+			COALESCE(c.name, 'Unknown') as sender_name,
+			COALESCE(m.content, '') as text,
+			COALESCE(c.is_me, 0) as is_from_me
+		FROM messages m
+		LEFT JOIN contacts c ON m.sender_id = c.id
+		WHERE m.conversation_id = ?
+		ORDER BY m.timestamp ASC
 	`
 
-	rows, err := db.Query(query, conversationID)
+	rows, err := db.Query(msgQuery, conversationID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
@@ -130,7 +150,14 @@ func LoadConversation(dbPath string, conversationID int64) (*Conversation, error
 		}
 
 		msg.IsFromMe = isFromMe == 1
-		msg.Timestamp, _ = time.Parse("2006-01-02 15:04:05", timestampStr)
+		msg.Timestamp, _ = time.Parse(time.RFC3339, timestampStr)
+
+		// Load attachments for this message
+		msg.Attachments = loadAttachments(db, msg.ID)
+
+		// Load reactions for this message
+		msg.Reactions = loadReactions(db, msg.GUID)
+
 		conv.Messages = append(conv.Messages, msg)
 	}
 
@@ -142,11 +169,66 @@ func LoadConversation(dbPath string, conversationID int64) (*Conversation, error
 		return nil, fmt.Errorf("no messages found for conversation %d", conversationID)
 	}
 
-	// Set conversation time bounds
-	conv.StartTime = conv.Messages[0].Timestamp
-	conv.EndTime = conv.Messages[len(conv.Messages)-1].Timestamp
-
 	return &conv, nil
+}
+
+// loadAttachments loads attachments for a message from eve.db
+func loadAttachments(db *sql.DB, messageID int64) []Attachment {
+	query := `
+		SELECT id, COALESCE(mime_type, ''), COALESCE(file_name, ''), COALESCE(is_sticker, 0)
+		FROM attachments
+		WHERE message_id = ?
+	`
+	rows, err := db.Query(query, messageID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var attachments []Attachment
+	for rows.Next() {
+		var att Attachment
+		var isSticker int
+		if err := rows.Scan(&att.ID, &att.MimeType, &att.FileName, &isSticker); err != nil {
+			continue
+		}
+		att.IsSticker = isSticker == 1
+		attachments = append(attachments, att)
+	}
+	return attachments
+}
+
+// loadReactions loads reactions for a message from eve.db
+func loadReactions(db *sql.DB, messageGUID string) []Reaction {
+	if messageGUID == "" {
+		return nil
+	}
+	query := `
+		SELECT
+			r.reaction_type,
+			COALESCE(c.name, 'Unknown') as sender_name,
+			COALESCE(c.is_me, 0) as is_from_me
+		FROM reactions r
+		LEFT JOIN contacts c ON r.sender_id = c.id
+		WHERE r.original_message_guid = ?
+	`
+	rows, err := db.Query(query, messageGUID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var reactions []Reaction
+	for rows.Next() {
+		var r Reaction
+		var isFromMe int
+		if err := rows.Scan(&r.ReactionType, &r.SenderName, &isFromMe); err != nil {
+			continue
+		}
+		r.IsFromMe = isFromMe == 1
+		reactions = append(reactions, r)
+	}
+	return reactions
 }
 
 // EncodeMessage encodes a single message into text format

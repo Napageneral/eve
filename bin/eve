@@ -310,9 +310,13 @@ def cmd_compute_analyze(args: argparse.Namespace) -> int:
     # Ensure any imports that read settings pick up the broker we want to use.
     # This matters when `eve compute up` is started on a non-default Redis port.
     redis_port = int(getattr(args, "redis_port", 6379))
+    redis_metrics_port = int(getattr(args, "redis_metrics_port", None) or (redis_port + 1))
     broker_url = f"redis://127.0.0.1:{redis_port}/0"
+    metrics_url = f"redis://127.0.0.1:{redis_metrics_port}/0"
     os.environ["EVE_REDIS_URL"] = broker_url
     os.environ.setdefault("CHATSTATS_REDIS_URL", broker_url)
+    os.environ.setdefault("CHATSTATS_METRICS_REDIS_URL", metrics_url)
+    os.environ.setdefault("CHATSTATS_LIMITER_REDIS_URL", metrics_url)
 
     from backend.config import settings, configure_logging  # type: ignore
     configure_logging(force=True)
@@ -468,6 +472,7 @@ def cmd_compute_analyze(args: argparse.Namespace) -> int:
             "eve_prompt_id": eve_prompt_id,
             "task_id": task_id,
             "redis_port": redis_port,
+            "redis_metrics_port": redis_metrics_port,
             "analysis": last_row,
             "embeddings": {"required": require_embeddings, "count": emb_count},
             "timeout_seconds": timeout_s,
@@ -475,6 +480,176 @@ def cmd_compute_analyze(args: argparse.Namespace) -> int:
         pretty=getattr(args, "pretty", False),
     )
     return 0 if ok else 1
+
+
+def cmd_compute_analyze_chat(args: argparse.Namespace) -> int:
+    """Enqueue analysis for a batch of conversations in a chat and optionally wait (JSON-only stdout)."""
+    _ensure_python_path()
+    _set_env_from_args(args)
+
+    redis_port = int(getattr(args, "redis_port", 6379))
+    redis_metrics_port = int(getattr(args, "redis_metrics_port", None) or (redis_port + 1))
+    broker_url = f"redis://127.0.0.1:{redis_port}/0"
+    metrics_url = f"redis://127.0.0.1:{redis_metrics_port}/0"
+    os.environ["EVE_REDIS_URL"] = broker_url
+    os.environ.setdefault("CHATSTATS_REDIS_URL", broker_url)
+    os.environ.setdefault("CHATSTATS_METRICS_REDIS_URL", metrics_url)
+    os.environ.setdefault("CHATSTATS_LIMITER_REDIS_URL", metrics_url)
+
+    from backend.config import settings, configure_logging  # type: ignore
+
+    configure_logging(force=True)
+    db_path = str(settings.db_path)
+    if not Path(db_path).exists():
+        _print_json({"ok": False, "error": "db_missing", "db_path": db_path}, pretty=getattr(args, "pretty", False))
+        return 2
+
+    pass_name = str(getattr(args, "pass_name", "basic") or "basic")
+    limit = int(getattr(args, "limit", 50) or 50)
+    wait = bool(getattr(args, "wait", False))
+    timeout_s = float(getattr(args, "timeout_seconds", 60.0) or 60.0)
+    poll_s = float(getattr(args, "poll_interval_seconds", 1.0) or 1.0)
+    require_embeddings = bool(getattr(args, "require_embeddings", False))
+
+    # Resolve chat_id (default: top chat by message volume)
+    chat_id = getattr(args, "chat_id", None)
+    with _db_connect(db_path) as conn:
+        cur = conn.cursor()
+        if chat_id is None:
+            row = cur.execute(
+                "SELECT chat_id, COUNT(*) AS message_count FROM messages GROUP BY chat_id ORDER BY message_count DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                _print_json({"ok": False, "error": "no_messages"}, pretty=getattr(args, "pretty", False))
+                return 2
+            chat_id = int(row["chat_id"])
+        else:
+            chat_id = int(chat_id)
+
+        convo_rows = cur.execute(
+            """
+            SELECT c.id AS conversation_id
+            FROM conversations c
+            LEFT JOIN conversation_analyses ca
+              ON ca.conversation_id = c.id
+             AND ca.eve_prompt_id = 'convo-all-v1'
+            WHERE c.chat_id = ?
+              AND (ca.status IS NULL OR ca.status NOT IN ('success','processing'))
+            ORDER BY c.end_time DESC
+            LIMIT ?
+            """,
+            (chat_id, max(0, limit)),
+        ).fetchall()
+        convo_ids = [int(r["conversation_id"]) for r in convo_rows]
+
+    if not convo_ids:
+        _print_json(
+            {
+                "ok": True,
+                "chat_id": int(chat_id),
+                "pass": pass_name,
+                "selected": 0,
+                "enqueued": 0,
+                "skipped": 0,
+                "redis_port": redis_port,
+                "redis_metrics_port": redis_metrics_port,
+                "note": "no_conversations_selected",
+            },
+            pretty=getattr(args, "pretty", False),
+        )
+        return 0
+
+    from backend.celery_service.analysis_passes import get_pass_config, trigger_analysis_pass  # type: ignore
+
+    cfg = get_pass_config(pass_name) or {}
+    eve_prompt_id = cfg.get("eve_prompt_id") or "convo-all-v1"
+
+    t0 = time.time()
+    enqueued = 0
+    skipped = 0
+    task_ids: list[str] = []
+    for cid in convo_ids:
+        tid = trigger_analysis_pass(int(cid), int(chat_id), pass_name)
+        if tid:
+            enqueued += 1
+            task_ids.append(str(tid))
+        else:
+            skipped += 1
+    enqueue_s = time.time() - t0
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "chat_id": int(chat_id),
+        "pass": pass_name,
+        "eve_prompt_id": str(eve_prompt_id),
+        "selected": len(convo_ids),
+        "enqueued": enqueued,
+        "skipped": skipped,
+        "enqueue_seconds": round(enqueue_s, 3),
+        "redis_port": redis_port,
+        "redis_metrics_port": redis_metrics_port,
+        "conversation_id_sample": convo_ids[:10],
+        "task_id_sample": task_ids[:10],
+    }
+
+    if not wait:
+        _print_json(payload, pretty=getattr(args, "pretty", False))
+        return 0
+
+    # Wait (bounded) and compute throughput for this batch
+    deadline = time.time() + max(0.0, timeout_s)
+    last_counts: dict[str, int] = {}
+    emb_convos: int | None = None
+    while time.time() < deadline:
+        try:
+            with _db_connect(db_path) as conn:
+                cur = conn.cursor()
+                placeholders = ",".join(["?"] * len(convo_ids))
+                rows = cur.execute(
+                    f"""
+                    SELECT status, COUNT(*) AS count
+                    FROM conversation_analyses
+                    WHERE eve_prompt_id = ?
+                      AND conversation_id IN ({placeholders})
+                    GROUP BY status
+                    """,
+                    (str(eve_prompt_id), *[int(x) for x in convo_ids]),
+                ).fetchall()
+                last_counts = {str(r["status"]): int(r["count"]) for r in rows}
+
+                if require_embeddings:
+                    # embeddings.conversation_id is stored as TEXT
+                    emb_row = cur.execute(
+                        f"""
+                        SELECT COUNT(DISTINCT conversation_id) AS c
+                        FROM embeddings
+                        WHERE conversation_id IN ({placeholders})
+                        """,
+                        tuple(str(int(x)) for x in convo_ids),
+                    ).fetchone()
+                    emb_convos = int((emb_row or {"c": 0})["c"])
+        except Exception:
+            pass
+
+        done = int(last_counts.get("success", 0)) + int(last_counts.get("failed", 0))
+        if done >= len(convo_ids) and (not require_embeddings or (emb_convos or 0) >= len(convo_ids)):
+            break
+        time.sleep(max(0.1, poll_s))
+
+    elapsed = time.time() - t0
+    done = int(last_counts.get("success", 0)) + int(last_counts.get("failed", 0))
+    payload["wait"] = {
+        "timeout_seconds": timeout_s,
+        "poll_interval_seconds": poll_s,
+        "elapsed_seconds": round(elapsed, 3),
+        "status_counts": last_counts,
+        "done": done,
+        "total": len(convo_ids),
+        "throughput_conversations_per_sec": round((done / elapsed) if elapsed > 0 else 0.0, 3),
+        "embeddings": {"required": require_embeddings, "conversations_with_embeddings": emb_convos},
+    }
+    _print_json(payload, pretty=getattr(args, "pretty", False))
+    return 0
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -793,6 +968,7 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
     run_dir = _run_dir(app_dir)
 
     redis_port = int(args.redis_port)
+    redis_metrics_port = int(getattr(args, "redis_metrics_port", None) or (redis_port + 1))
     context_port = int(args.context_port)
 
     env_base = dict(os.environ)
@@ -804,23 +980,179 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
 
     # --- Redis -----------------------------------------------------------
     if not args.no_redis:
-        # If something already responds on this port, treat it as external.
-        try:
-            p = subprocess.run(["redis-cli", "-p", str(redis_port), "ping"], capture_output=True, text=True, timeout=1.0)
-            if p.returncode == 0 and (p.stdout or "").strip() == "PONG":
-                out["started"]["redis"] = {"ok": True, "external": True, "port": redis_port}
-            else:
-                raise RuntimeError("no PONG")
-        except Exception:
-            out["started"]["redis"] = _start_process(
-                name="redis",
-                cmd=["redis-server", "--save", "", "--appendonly", "no", "--bind", "127.0.0.1", "--port", str(redis_port)],
+        # ChatStats topology: 2 Redis instances
+        # - durable queue (AOF on) for Celery broker
+        # - ephemeral metrics (AOF off) for counters/streams/limiter
+        broker_url = f"redis://127.0.0.1:{redis_port}/0"
+        metrics_url = f"redis://127.0.0.1:{redis_metrics_port}/0"
+
+        env_base["REDIS_QUEUE_PORT"] = str(redis_port)
+        env_base["REDIS_QUEUE_URL"] = broker_url
+        env_base["REDIS_METRICS_PORT"] = str(redis_metrics_port)
+        env_base["REDIS_METRICS_URL"] = metrics_url
+        # Back-compat / legacy hints
+        env_base["REDIS_PORT"] = str(redis_port)
+        env_base["REDIS_URL"] = broker_url
+        # ChatStats expects metrics Redis for counters/streams/limiter by default
+        env_base.setdefault("CHATSTATS_METRICS_REDIS_URL", metrics_url)
+        env_base.setdefault("CHATSTATS_REDIS_URL", metrics_url)
+        env_base.setdefault("CHATSTATS_LIMITER_REDIS_URL", metrics_url)
+
+        def _redis_ping(port: int) -> bool:
+            try:
+                p = subprocess.run(
+                    ["redis-cli", "-p", str(int(port)), "ping"],
+                    capture_output=True,
+                    text=True,
+                    timeout=0.75,
+                )
+                return p.returncode == 0 and (p.stdout or "").strip() == "PONG"
+            except Exception:
+                return False
+
+        # Data dirs (under Eve app dir)
+        redis_base = app_dir / "redis-data"
+        queue_dir = redis_base / "queue"
+        metrics_dir = redis_base / "metrics"
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+
+        # Start durable broker Redis (AOF on)
+        if _redis_ping(redis_port):
+            out["started"]["redis_queue"] = {"ok": True, "external": True, "port": redis_port, "url": broker_url}
+        else:
+            out["started"]["redis_queue"] = _start_process(
+                name="redis_queue",
+                cmd=[
+                    "redis-server",
+                    "--port",
+                    str(redis_port),
+                    "--bind",
+                    "127.0.0.1",
+                    "--dir",
+                    str(queue_dir),
+                    "--save",
+                    "",
+                    "--appendonly",
+                    "yes",
+                    "--appendfilename",
+                    "redis-queue.aof",
+                    "--appendfsync",
+                    "everysec",
+                    "--no-appendfsync-on-rewrite",
+                    "yes",
+                    "--auto-aof-rewrite-percentage",
+                    "200",
+                    "--auto-aof-rewrite-min-size",
+                    "512mb",
+                    "--aof-use-rdb-preamble",
+                    "yes",
+                    "--maxmemory",
+                    "512mb",
+                    "--maxmemory-policy",
+                    "noeviction",
+                    "--client-output-buffer-limit",
+                    "normal",
+                    "0",
+                    "0",
+                    "0",
+                    "--client-output-buffer-limit",
+                    "replica",
+                    "256mb",
+                    "64mb",
+                    "60",
+                    "--client-output-buffer-limit",
+                    "pubsub",
+                    "32mb",
+                    "8mb",
+                    "60",
+                    "--protected-mode",
+                    "yes",
+                    "--daemonize",
+                    "no",
+                    "--stop-writes-on-bgsave-error",
+                    "no",
+                    "--tcp-backlog",
+                    "511",
+                    "--timeout",
+                    "0",
+                    "--tcp-keepalive",
+                    "300",
+                    "--loglevel",
+                    "notice",
+                ],
                 cwd=str(repo),
                 env=env_base,
-                pid_path=run_dir / "redis.pid",
-                log_path=run_dir / "redis.log",
+                pid_path=run_dir / "redis-queue.pid",
+                log_path=run_dir / "redis-queue.log",
             )
-            out["started"]["redis"]["port"] = redis_port
+            out["started"]["redis_queue"]["port"] = redis_port
+            out["started"]["redis_queue"]["url"] = broker_url
+
+        # Start ephemeral metrics Redis (AOF off)
+        if _redis_ping(redis_metrics_port):
+            out["started"]["redis_metrics"] = {"ok": True, "external": True, "port": redis_metrics_port, "url": metrics_url}
+        else:
+            out["started"]["redis_metrics"] = _start_process(
+                name="redis_metrics",
+                cmd=[
+                    "redis-server",
+                    "--port",
+                    str(redis_metrics_port),
+                    "--bind",
+                    "127.0.0.1",
+                    "--dir",
+                    str(metrics_dir),
+                    "--save",
+                    "",
+                    "--appendonly",
+                    "no",
+                    "--maxmemory",
+                    "512mb",
+                    "--maxmemory-policy",
+                    "allkeys-lru",
+                    "--client-output-buffer-limit",
+                    "normal",
+                    "0",
+                    "0",
+                    "0",
+                    "--client-output-buffer-limit",
+                    "replica",
+                    "256mb",
+                    "64mb",
+                    "60",
+                    "--client-output-buffer-limit",
+                    "pubsub",
+                    "32mb",
+                    "8mb",
+                    "60",
+                    "--protected-mode",
+                    "yes",
+                    "--daemonize",
+                    "no",
+                    "--tcp-backlog",
+                    "511",
+                    "--timeout",
+                    "0",
+                    "--tcp-keepalive",
+                    "300",
+                    "--loglevel",
+                    "notice",
+                ],
+                cwd=str(repo),
+                env=env_base,
+                pid_path=run_dir / "redis-metrics.pid",
+                log_path=run_dir / "redis-metrics.log",
+            )
+            out["started"]["redis_metrics"]["port"] = redis_metrics_port
+            out["started"]["redis_metrics"]["url"] = metrics_url
+
+        # Wait briefly for both Redis instances before starting Celery
+        t0 = time.time()
+        while time.time() - t0 < 5.0:
+            if _redis_ping(redis_port) and _redis_ping(redis_metrics_port):
+                break
+            time.sleep(0.1)
 
     # --- Context Engine --------------------------------------------------
     if not args.no_context_engine:
@@ -842,6 +1174,12 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
             )
             out["started"]["context_engine"]["port"] = context_port
             out["started"]["context_engine"]["url"] = base_url
+            # Wait briefly for server to report healthy before starting Celery
+            t0 = time.time()
+            while time.time() - t0 < 10.0:
+                if _doctor_check_http_ok(f"{base_url}/health", timeout_s=0.75).get("ok"):
+                    break
+                time.sleep(0.1)
 
     # --- Celery ----------------------------------------------------------
     if not args.no_celery:
@@ -857,90 +1195,366 @@ def cmd_compute_up(args: argparse.Namespace) -> int:
         # Warn (but don't fail) if Gemini key isn't present; embeddings will fail without it.
         out["started"]["gemini_api_key_present"] = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENERATIVE_AI_API_KEY"))
 
-        env_celery = dict(env_base)
-        env_celery["CELERY_LOG_LEVEL"] = os.getenv("CELERY_LOG_LEVEL", "WARNING")
-        env_celery["CELERY_BROKER_URL"] = f"redis://127.0.0.1:{redis_port}/0"
-        env_celery["EVE_REDIS_URL"] = env_celery["CELERY_BROKER_URL"]
-        # Point Python to the TS context-engine server.
-        # NOTE: settings env var for eve_http_url is awkward (EVE_EVE_HTTP_URL) due to field naming.
-        env_celery.setdefault("EVE_EVE_HTTP_URL", f"http://127.0.0.1:{context_port}")
+        # ---- env wiring (mirrors ChatStats Electron orchestration) ---------
+        broker_url = f"redis://127.0.0.1:{redis_port}/0"
+        metrics_url = f"redis://127.0.0.1:{redis_metrics_port}/0"
+        eve_http_url = f"http://127.0.0.1:{context_port}"
 
-        # Analysis + embeddings worker (gevent)
-        out["started"]["celery_worker_analysis"] = _start_process(
-            name="celery_worker_analysis",
+        env_vars: dict[str, str] = dict(env_base)
+        env_vars.setdefault("CHATSTATS_PARENT_PID", str(os.getpid()))
+        env_vars.setdefault("CHATSTATS_BROKER_TYPE", os.getenv("CHATSTATS_BROKER_TYPE", "redis"))
+        env_vars["CELERY_BROKER_URL"] = broker_url
+        env_vars["CHATSTATS_BROKER_URL"] = broker_url
+        env_vars["CHATSTATS_METRICS_REDIS_URL"] = metrics_url
+        env_vars["CHATSTATS_REDIS_URL"] = metrics_url
+        env_vars["CHATSTATS_LIMITER_REDIS_URL"] = metrics_url
+        env_vars["REDIS_QUEUE_URL"] = broker_url
+        env_vars["REDIS_METRICS_URL"] = metrics_url
+        env_vars["REDIS_URL"] = broker_url
+        env_vars["REDIS_PORT"] = str(redis_port)
+        env_vars["CHATSTATS_DB_PATH"] = str(settings.db_path)
+        env_vars.setdefault("CHATSTATS_LOG_DIR", str(app_dir / "logs"))
+        env_vars["CHATSTATS_IS_CELERY_WORKER"] = "1"
+
+        # Ensure Settings sees the broker, and the analysis/encoding client sees the TS engine.
+        env_vars["EVE_REDIS_URL"] = broker_url
+        # NOTE: settings env var for eve_http_url is awkward (EVE_EVE_HTTP_URL) due to field naming.
+        env_vars.setdefault("EVE_EVE_HTTP_URL", eve_http_url)
+
+        # Increase SQLite busy_timeout to reduce transient lock errors (default matches ChatStats).
+        env_vars.setdefault("CHATSTATS_SQLITE_BUSY_TIMEOUT_MS", os.getenv("CHATSTATS_SQLITE_BUSY_TIMEOUT_MS", "60000"))
+
+        # LiteLLM/HTTPX pool configuration for high concurrency (defaults mirror ChatStats)
+        env_vars.setdefault("LITELLM_POOL_MAX_CONNECTIONS", os.getenv("LITELLM_POOL_MAX_CONNECTIONS", "500"))
+        env_vars.setdefault("LITELLM_POOL_MAX_KEEPALIVE", os.getenv("LITELLM_POOL_MAX_KEEPALIVE", "250"))
+        env_vars.setdefault("LITELLM_POOL_KEEPALIVE_SECS", os.getenv("LITELLM_POOL_KEEPALIVE_SECS", "30"))
+        env_vars.setdefault("LITELLM_HTTP2", os.getenv("LITELLM_HTTP2", "1"))
+        env_vars.setdefault("LITELLM_CONNECT_TIMEOUT", os.getenv("LITELLM_CONNECT_TIMEOUT", "1.0"))
+        env_vars.setdefault("LITELLM_READ_TIMEOUT", os.getenv("LITELLM_READ_TIMEOUT", "60.0"))
+        env_vars.setdefault("LITELLM_WRITE_TIMEOUT", os.getenv("LITELLM_WRITE_TIMEOUT", "60.0"))
+        env_vars.setdefault("LITELLM_POOL_TIMEOUT", os.getenv("LITELLM_POOL_TIMEOUT", "0.5"))
+
+        # Global rate limiter + pools
+        env_vars.setdefault("CHATSTATS_LLM_GLOBAL_RPS", os.getenv("CHATSTATS_LLM_GLOBAL_RPS", "450"))
+        env_vars.setdefault("CHATSTATS_LIMITER_MAX_BLOCK_MS", os.getenv("CHATSTATS_LIMITER_MAX_BLOCK_MS", "45000"))
+        env_vars.setdefault("CHATSTATS_LIMITER_LOCAL_HEADROOM", os.getenv("CHATSTATS_LIMITER_LOCAL_HEADROOM", "1.5"))
+        env_vars.setdefault("CHATSTATS_LIMITER_SYNC_INTERVAL_MS", os.getenv("CHATSTATS_LIMITER_SYNC_INTERVAL_MS", "20"))
+        env_vars.setdefault("LIMITER_REDIS_MAX_CONNECTIONS", os.getenv("LIMITER_REDIS_MAX_CONNECTIONS", "8000"))
+        env_vars.setdefault("CHATSTATS_REDIS_POOL_MAX", os.getenv("CHATSTATS_REDIS_POOL_MAX", "15000"))
+        env_vars.setdefault("CELERY_BROKER_POOL_LIMIT", os.getenv("CELERY_BROKER_POOL_LIMIT", "8000"))
+        env_vars.setdefault("CELERY_BROKER_MAX_CONNECTIONS", os.getenv("CELERY_BROKER_MAX_CONNECTIONS", "4000"))
+        env_vars.setdefault("CELERY_REDIS_MAX_CONNECTIONS", os.getenv("CELERY_REDIS_MAX_CONNECTIONS", "1000"))
+
+        # Python/GC + gevent tuning
+        env_vars.setdefault("PYTHONGC", os.getenv("PYTHONGC", "700,10,10"))
+        env_vars.setdefault("PYTHONASYNCIODEBUG", "0")
+        env_vars.setdefault("GEVENT_RESOLVER", os.getenv("GEVENT_RESOLVER", "thread"))
+        env_vars.setdefault("GEVENT_THREADPOOL_SIZE", os.getenv("GEVENT_THREADPOOL_SIZE", "64"))
+
+        # Redis socket tuning
+        env_vars.setdefault("REDIS_SOCKET_KEEPALIVE", os.getenv("REDIS_SOCKET_KEEPALIVE", "1"))
+        env_vars.setdefault("REDIS_SOCKET_KEEPALIVE_TIME", os.getenv("REDIS_SOCKET_KEEPALIVE_TIME", "30"))
+        env_vars.setdefault("REDIS_SOCKET_KEEPALIVE_INTVL", os.getenv("REDIS_SOCKET_KEEPALIVE_INTVL", "10"))
+        env_vars.setdefault("REDIS_SOCKET_KEEPALIVE_CNT", os.getenv("REDIS_SOCKET_KEEPALIVE_CNT", "3"))
+
+        env_vars.setdefault("ENABLE_HYBRID_RATE_LIMITER", os.getenv("ENABLE_HYBRID_RATE_LIMITER", "true"))
+
+        # ---- Celery workers (mirrors ChatStats layout) ---------------------
+        out["started"]["celery"] = {"ok": True}
+
+        # Allow pinning the worker interpreter (ChatStats ran under Python 3.11;
+        # Python 3.13 + gRPC/gevent has shown instability in some environments).
+        python_exe = os.getenv("EVE_PYTHON") or sys.executable
+        try:
+            out["started"]["celery"]["python_exe"] = python_exe
+        except Exception:
+            pass
+        if python_exe == sys.executable and sys.version_info >= (3, 13):
+            out.setdefault("warnings", []).append(
+                "python_3_13_detected: ChatStats compute plane ran on Python 3.11; "
+                "if you see grpc/gevent crashes, set EVE_PYTHON to a Python 3.11 interpreter/venv."
+            )
+
+        analysis_worker_count = int(os.getenv("CELERY_ANALYSIS_WORKER_PROCS", "8"))
+        analysis_concurrency = str(os.getenv("CELERY_ANALYSIS_CONCURRENCY", str(int(args.celery_concurrency))))
+        spawn_jitter_ms = int(os.getenv("CELERY_SPAWN_JITTER_MS", "150"))
+
+        out["started"]["celery_workers_analysis"] = []
+        for i in range(max(0, analysis_worker_count)):
+            analysis_env = dict(env_vars)
+            analysis_env.update(
+                {
+                    "CELERY_ANALYSIS_WORKER_PROCS": str(analysis_worker_count),
+                    "CELERY_ANALYSIS_CONCURRENCY": str(analysis_concurrency),
+                    "CELERY_PREFETCH": os.getenv("CELERY_ANALYSIS_PREFETCH", "2"),
+                    "LLM_LANES_PER_PROC": os.getenv("LLM_LANES_PER_PROC", "64"),
+                    # Optional: reduce socket churn per process at high worker counts
+                    "LITELLM_POOL_MAX_CONNECTIONS": os.getenv("LITELLM_POOL_MAX_CONNECTIONS", "250"),
+                    "CELERY_LOG_LEVEL": os.getenv("CELERY_ANALYSIS_LOG_LEVEL", "INFO"),
+                    "CHATSTATS_LITELLM_LOG_LEVEL": os.getenv("CHATSTATS_LITELLM_LOG_LEVEL", "WARNING"),
+                    "CHATSTATS_REDIRECTED_LOG_LEVEL": os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL", "ERROR"),
+                    "CELERY_REDIRECT_STDOUTS_LEVEL": os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL", "ERROR"),
+                    "CHATSTATS_METRICS_ENABLED": os.getenv("CHATSTATS_METRICS_ENABLED", "0"),
+                }
+            )
+            out["started"]["celery_workers_analysis"].append(
+                _start_process(
+                    name=f"celery_worker_analysis_{i}",
+                    cmd=[
+                        python_exe,
+                        "-m",
+                        "celery",
+                        "-A",
+                        "backend.celery_service.app",
+                        "worker",
+                        "-Q",
+                        "chatstats-analysis",
+                        "--pool=gevent",
+                        "--concurrency",
+                        str(analysis_concurrency),
+                        "--loglevel",
+                        analysis_env["CELERY_LOG_LEVEL"],
+                        "--without-gossip",
+                        "--without-mingle",
+                        "--without-heartbeat",
+                        "--hostname",
+                        f"analysis@{i}",
+                    ],
+                    cwd=str(repo),
+                    env=analysis_env,
+                    pid_path=run_dir / f"celery-analysis-{i}.pid",
+                    log_path=run_dir / f"celery-analysis-{i}.log",
+                )
+            )
+            if spawn_jitter_ms > 0 and i < analysis_worker_count - 1:
+                time.sleep(max(0.0, float(spawn_jitter_ms) / 1000.0))
+
+        # High-concurrency embeddings workers (network-bound) – gevent pool
+        emb_worker_count = int(os.getenv("CELERY_EMBED_GEVENT_PROCS", str(analysis_worker_count)))
+        emb_concurrency = str(os.getenv("CELERY_EMBED_GEVENT_CONCURRENCY", str(analysis_concurrency)))
+        out["started"]["celery_workers_embeddings"] = []
+        for i in range(max(0, emb_worker_count)):
+            e_env = dict(env_vars)
+            e_env.update(
+                {
+                    # IMPORTANT: On Python 3.13 we've seen gRPC-related crashes when gevent
+                    # monkey-patching is enabled. Embeddings can use gRPC transports depending
+                    # on installed Google libs, so disable patching for stability.
+                    "CHATSTATS_DISABLE_GEVENT_PATCH": "1",
+                    "CELERY_LOG_LEVEL": os.getenv("CELERY_LOG_LEVEL", "ERROR"),
+                    "CHATSTATS_LITELLM_LOG_LEVEL": os.getenv("CHATSTATS_LITELLM_LOG_LEVEL", "WARNING"),
+                    "CHATSTATS_REDIRECTED_LOG_LEVEL": os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL", "ERROR"),
+                    "CELERY_REDIRECT_STDOUTS_LEVEL": os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL", "ERROR"),
+                    "CHATSTATS_METRICS_ENABLED": os.getenv("CHATSTATS_METRICS_ENABLED", "0"),
+                }
+            )
+            out["started"]["celery_workers_embeddings"].append(
+                _start_process(
+                    name=f"celery_worker_embeddings_{i}",
+                    cmd=[
+                        python_exe,
+                        "-m",
+                        "celery",
+                        "-A",
+                        "backend.celery_service.app",
+                        "worker",
+                        "-Q",
+                        "chatstats-embeddings",
+                        "--pool=gevent",
+                        "--concurrency",
+                        str(emb_concurrency),
+                        "--loglevel",
+                        "error",
+                        "--without-gossip",
+                        "--without-mingle",
+                        "--without-heartbeat",
+                        "--hostname",
+                        f"embeddings@{i}",
+                    ],
+                    cwd=str(repo),
+                    env=e_env,
+                    pid_path=run_dir / f"celery-embeddings-{i}.pid",
+                    log_path=run_dir / f"celery-embeddings-{i}.log",
+                )
+            )
+
+        # Small prefork embeddings-index worker for FAISS builds
+        emb_index_conc = str(os.getenv("CELERY_EMBED_INDEX_CONCURRENCY", "1"))
+        idx_env = dict(env_vars)
+        idx_env["CHATSTATS_DISABLE_GEVENT_PATCH"] = "1"
+        idx_env["CELERY_LOG_LEVEL"] = os.getenv("CELERY_LOG_LEVEL", "ERROR")
+        idx_env["CHATSTATS_LITELLM_LOG_LEVEL"] = os.getenv("CHATSTATS_LITELLM_LOG_LEVEL", "WARNING")
+        idx_env["CHATSTATS_REDIRECTED_LOG_LEVEL"] = os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL", "ERROR")
+        idx_env["CELERY_REDIRECT_STDOUTS_LEVEL"] = os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL", "ERROR")
+        idx_env["CHATSTATS_METRICS_ENABLED"] = os.getenv("CHATSTATS_METRICS_ENABLED", "0")
+        out["started"]["celery_worker_embeddings_index"] = _start_process(
+            name="celery_worker_embeddings_index",
             cmd=[
-                sys.executable,
+                python_exe,
                 "-m",
                 "celery",
                 "-A",
                 "backend.celery_service.app",
                 "worker",
-                "-n",
-                "eve-analysis@%h",
                 "-Q",
-                "chatstats-analysis,chatstats-embeddings,chatstats-events,chatstats-bulk,chatstats-report,chatstats-display",
-                "-P",
-                "gevent",
+                "chatstats-embeddings-index",
+                "--pool=prefork",
                 "--concurrency",
-                str(int(args.celery_concurrency)),
+                str(emb_index_conc),
                 "--loglevel",
-                env_celery["CELERY_LOG_LEVEL"],
+                "error",
+                "--hostname",
+                "embeddings-index@%h",
             ],
             cwd=str(repo),
-            env=env_celery,
-            pid_path=run_dir / "celery-analysis.pid",
-            log_path=run_dir / "celery-analysis.log",
+            env=idx_env,
+            pid_path=run_dir / "celery-embeddings-index.pid",
+            log_path=run_dir / "celery-embeddings-index.log",
         )
 
-        # DB worker (single writer)
-        # IMPORTANT: DB worker does not need gevent monkey patching and on some
-        # Python versions it can break Celery's consumer/control loop.
-        env_db = dict(env_celery)
-        env_db["CHATSTATS_DISABLE_GEVENT_PATCH"] = "1"
-        out["started"]["celery_worker_db"] = _start_process(
-            name="celery_worker_db",
+        # Dedicated DB persistence worker(s) – SQLite single-writer; keep low concurrency
+        db_concurrency = str(os.getenv("CELERY_DB_CONCURRENCY", "1"))
+        db_worker_count = int(os.getenv("CELERY_DB_WORKERS", "1"))
+        out["started"]["celery_workers_db"] = []
+        for i in range(max(0, db_worker_count)):
+            db_env = dict(env_vars)
+            db_env.update(
+                {
+                    "CELERY_PREFETCH": os.getenv("CELERY_DB_PREFETCH", "1"),
+                    "CHATSTATS_DISABLE_GEVENT_PATCH": "1",
+                    "CELERY_LOG_LEVEL": os.getenv("CELERY_LOG_LEVEL", "ERROR"),
+                    "CHATSTATS_LITELLM_LOG_LEVEL": os.getenv("CHATSTATS_LITELLM_LOG_LEVEL", "WARNING"),
+                    "CHATSTATS_REDIRECTED_LOG_LEVEL": os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL", "ERROR"),
+                    "CELERY_REDIRECT_STDOUTS_LEVEL": os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL", "ERROR"),
+                    "CHATSTATS_METRICS_ENABLED": os.getenv("CHATSTATS_METRICS_ENABLED", "0"),
+                }
+            )
+            out["started"]["celery_workers_db"].append(
+                _start_process(
+                    name=f"celery_worker_db_{i}",
+                    cmd=[
+                        python_exe,
+                        "-m",
+                        "celery",
+                        "-A",
+                        "backend.celery_service.app",
+                        "worker",
+                        "-Q",
+                        "chatstats-db",
+                        "--pool=prefork",
+                        "--concurrency",
+                        str(db_concurrency),
+                        "--loglevel",
+                        "error",
+                        "--hostname",
+                        f"db@{i}",
+                    ],
+                    cwd=str(repo),
+                    env=db_env,
+                    pid_path=run_dir / f"celery-db-{i}.pid",
+                    log_path=run_dir / f"celery-db-{i}.log",
+                )
+            )
+
+        # Orchestrator/aux worker for small queues (bulk, reports, display, events, commitments, dlq)
+        aux_queues = os.getenv(
+            "CELERY_AUX_QUEUES",
+            "chatstats-bulk,chatstats-report,chatstats-display,chatstats-events,chatstats-commitments,chatstats-dlq",
+        )
+        aux_concurrency = str(os.getenv("CELERY_AUX_CONCURRENCY", "1"))
+        aux_pool = os.getenv("CELERY_AUX_POOL", "prefork")
+        aux_env = dict(env_vars)
+        aux_env.update(
+            {
+                "CELERY_PREFETCH": os.getenv("CELERY_AUX_PREFETCH", "2"),
+                "CHATSTATS_DISABLE_GEVENT_PATCH": "1",
+                "CELERY_LOG_LEVEL": os.getenv("CELERY_LOG_LEVEL", "ERROR"),
+                "CHATSTATS_LITELLM_LOG_LEVEL": os.getenv("CHATSTATS_LITELLM_LOG_LEVEL", "WARNING"),
+                "CHATSTATS_REDIRECTED_LOG_LEVEL": os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL", "ERROR"),
+                "CELERY_REDIRECT_STDOUTS_LEVEL": os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL", "ERROR"),
+                "CHATSTATS_METRICS_ENABLED": os.getenv("CHATSTATS_METRICS_ENABLED", "0"),
+            }
+        )
+        out["started"]["celery_worker_aux"] = _start_process(
+            name="celery_worker_aux",
             cmd=[
-                sys.executable,
+                python_exe,
                 "-m",
                 "celery",
                 "-A",
                 "backend.celery_service.app",
                 "worker",
-                "-n",
-                "eve-db@%h",
                 "-Q",
-                "chatstats-db",
+                aux_queues,
+                f"--pool={aux_pool}",
+                "--concurrency",
+                str(aux_concurrency),
+                "--loglevel",
+                "error",
+                "--hostname",
+                "aux@%h",
+            ],
+            cwd=str(repo),
+            env=aux_env,
+            pid_path=run_dir / "celery-aux.pid",
+            log_path=run_dir / "celery-aux.log",
+        )
+
+        # Sequential worker (kept for compatibility; usually idle)
+        seq_env = dict(env_vars)
+        seq_env.update(
+            {
+                "CHATSTATS_DISABLE_GEVENT_PATCH": "1",
+                "CELERY_LOG_LEVEL": os.getenv("CELERY_LOG_LEVEL", "ERROR"),
+                "CHATSTATS_LITELLM_LOG_LEVEL": os.getenv("CHATSTATS_LITELLM_LOG_LEVEL", "WARNING"),
+                "CHATSTATS_REDIRECTED_LOG_LEVEL": os.getenv("CHATSTATS_REDIRECTED_LOG_LEVEL", "ERROR"),
+                "CELERY_REDIRECT_STDOUTS_LEVEL": os.getenv("CELERY_REDIRECT_STDOUTS_LEVEL", "ERROR"),
+                "CHATSTATS_METRICS_ENABLED": os.getenv("CHATSTATS_METRICS_ENABLED", "0"),
+            }
+        )
+        out["started"]["celery_worker_sequential"] = _start_process(
+            name="celery_worker_sequential",
+            cmd=[
+                python_exe,
+                "-m",
+                "celery",
+                "-A",
+                "backend.celery_service.app",
+                "worker",
+                "-Q",
+                "chatstats-commitments-sequential",
+                "--pool=threads",
                 "--concurrency",
                 "1",
                 "--loglevel",
-                env_celery["CELERY_LOG_LEVEL"],
+                "error",
             ],
             cwd=str(repo),
-            env=env_db,
-            pid_path=run_dir / "celery-db.pid",
-            log_path=run_dir / "celery-db.log",
+            env=seq_env,
+            pid_path=run_dir / "celery-sequential.pid",
+            log_path=run_dir / "celery-sequential.log",
         )
 
         # Beat scheduler (periodic sealing + FAISS rebuild coalescer)
-        env_beat = dict(env_celery)
-        env_beat["CHATSTATS_DISABLE_GEVENT_PATCH"] = "1"
+        beat_env = dict(env_vars)
+        beat_env["CELERY_LOG_LEVEL"] = os.getenv("CELERY_LOG_LEVEL", "ERROR")
         out["started"]["celery_beat"] = _start_process(
             name="celery_beat",
             cmd=[
-                sys.executable,
+                python_exe,
                 "-m",
                 "celery",
                 "-A",
                 "backend.celery_service.app",
                 "beat",
                 "--loglevel",
-                env_celery["CELERY_LOG_LEVEL"],
+                "error",
                 # Keep beat state out of the repo root; scope it to the app dir.
                 "--schedule",
                 str(run_dir / "celerybeat-schedule"),
             ],
             cwd=str(repo),
-            env=env_beat,
+            env=beat_env,
             pid_path=run_dir / "celery-beat.pid",
             log_path=run_dir / "celery-beat.log",
         )
@@ -959,13 +1573,48 @@ def cmd_compute_down(args: argparse.Namespace) -> int:
     run_dir = _run_dir(app_dir)
 
     stopped: dict[str, Any] = {}
-    for name, pidfile in (
-        ("celery_beat", run_dir / "celery-beat.pid"),
-        ("celery_worker_db", run_dir / "celery-db.pid"),
-        ("celery_worker_analysis", run_dir / "celery-analysis.pid"),
-        ("context_engine", run_dir / "context-engine.pid"),
-        ("redis", run_dir / "redis.pid"),
-    ):
+    # Stop in a predictable order (Celery -> context engine -> redis), but be
+    # robust to both legacy single-pid and new multi-pid layouts.
+    pidfiles: list[tuple[str, Path]] = []
+    # Celery beat
+    pidfiles.append(("celery_beat", run_dir / "celery-beat.pid"))
+    # Celery aux + sequential + index
+    pidfiles.extend(
+        [
+            ("celery_worker_aux", run_dir / "celery-aux.pid"),
+            ("celery_worker_sequential", run_dir / "celery-sequential.pid"),
+            ("celery_worker_embeddings_index", run_dir / "celery-embeddings-index.pid"),
+        ]
+    )
+    # Worker groups
+    for p in sorted(run_dir.glob("celery-analysis-*.pid")):
+        pidfiles.append((p.stem, p))
+    for p in sorted(run_dir.glob("celery-embeddings-*.pid")):
+        # Exclude the prefork index worker pidfile; it is stopped explicitly.
+        if p.name == "celery-embeddings-index.pid":
+            continue
+        pidfiles.append((p.stem, p))
+    for p in sorted(run_dir.glob("celery-db-*.pid")):
+        pidfiles.append((p.stem, p))
+    # Legacy single-worker pidfiles (if present)
+    pidfiles.extend(
+        [
+            ("celery_worker_db_legacy", run_dir / "celery-db.pid"),
+            ("celery_worker_analysis_legacy", run_dir / "celery-analysis.pid"),
+        ]
+    )
+    # Context engine
+    pidfiles.append(("context_engine", run_dir / "context-engine.pid"))
+    # Redis (new + legacy)
+    pidfiles.extend(
+        [
+            ("redis_metrics", run_dir / "redis-metrics.pid"),
+            ("redis_queue", run_dir / "redis-queue.pid"),
+            ("redis_legacy", run_dir / "redis.pid"),
+        ]
+    )
+
+    for name, pidfile in pidfiles:
         pid = _read_pid(pidfile)
         if not pid:
             stopped[name] = {"ok": True, "stopped": False}
@@ -989,18 +1638,27 @@ def cmd_compute_status(args: argparse.Namespace) -> int:
     _set_env_from_args(args)
 
     redis_port = int(args.redis_port)
+    redis_metrics_port = int(getattr(args, "redis_metrics_port", None) or (redis_port + 1))
     context_port = int(args.context_port)
 
     # Ensure any imports that read settings pick up the port we are checking.
     broker_url = f"redis://127.0.0.1:{redis_port}/0"
+    metrics_url = f"redis://127.0.0.1:{redis_metrics_port}/0"
     os.environ["EVE_REDIS_URL"] = broker_url
     os.environ.setdefault("CHATSTATS_REDIS_URL", broker_url)
+    os.environ.setdefault("CHATSTATS_METRICS_REDIS_URL", metrics_url)
+    os.environ.setdefault("CHATSTATS_LIMITER_REDIS_URL", metrics_url)
 
     from backend.config import settings  # type: ignore
     app_dir = Path(settings.app_dir)
     run_dir = _run_dir(app_dir)
 
-    status: dict[str, Any] = {"run_dir": str(run_dir), "redis_port": redis_port, "context_port": context_port}
+    status: dict[str, Any] = {
+        "run_dir": str(run_dir),
+        "redis_port": redis_port,
+        "redis_metrics_port": redis_metrics_port,
+        "context_port": context_port,
+    }
 
     def _proc_status(pidfile: Path) -> dict[str, Any]:
         pid = _read_pid(pidfile)
@@ -1008,19 +1666,36 @@ def cmd_compute_status(args: argparse.Namespace) -> int:
             return {"ok": True, "running": False}
         return {"ok": True, "pid": pid, "running": _pid_is_running(pid)}
 
-    status["redis"] = _proc_status(run_dir / "redis.pid")
+    status["redis_queue"] = _proc_status(run_dir / "redis-queue.pid")
+    status["redis_metrics"] = _proc_status(run_dir / "redis-metrics.pid")
+    status["redis_legacy"] = _proc_status(run_dir / "redis.pid")
     status["context_engine"] = _proc_status(run_dir / "context-engine.pid")
-    status["celery_worker_analysis"] = _proc_status(run_dir / "celery-analysis.pid")
-    status["celery_worker_db"] = _proc_status(run_dir / "celery-db.pid")
+    status["celery_workers_analysis"] = [_proc_status(p) for p in sorted(run_dir.glob("celery-analysis-*.pid"))]
+    status["celery_workers_embeddings"] = [
+        _proc_status(p) for p in sorted(run_dir.glob("celery-embeddings-*.pid")) if p.name != "celery-embeddings-index.pid"
+    ]
+    status["celery_workers_db"] = [_proc_status(p) for p in sorted(run_dir.glob("celery-db-*.pid"))]
+    status["celery_worker_embeddings_index"] = _proc_status(run_dir / "celery-embeddings-index.pid")
+    status["celery_worker_aux"] = _proc_status(run_dir / "celery-aux.pid")
+    status["celery_worker_sequential"] = _proc_status(run_dir / "celery-sequential.pid")
+    status["celery_worker_analysis_legacy"] = _proc_status(run_dir / "celery-analysis.pid")
+    status["celery_worker_db_legacy"] = _proc_status(run_dir / "celery-db.pid")
     status["celery_beat"] = _proc_status(run_dir / "celery-beat.pid")
 
     # Active health checks
-    status["redis_ping"] = {"ok": False}
+    status["redis_queue_ping"] = {"ok": False}
     try:
         p = subprocess.run(["redis-cli", "-p", str(redis_port), "ping"], capture_output=True, text=True, timeout=1.0)
-        status["redis_ping"] = {"ok": p.returncode == 0 and (p.stdout or "").strip() == "PONG", "detail": (p.stdout or p.stderr).strip()}
+        status["redis_queue_ping"] = {"ok": p.returncode == 0 and (p.stdout or "").strip() == "PONG", "detail": (p.stdout or p.stderr).strip()}
     except Exception as e:
-        status["redis_ping"] = {"ok": False, "error": str(e)}
+        status["redis_queue_ping"] = {"ok": False, "error": str(e)}
+
+    status["redis_metrics_ping"] = {"ok": False}
+    try:
+        p = subprocess.run(["redis-cli", "-p", str(redis_metrics_port), "ping"], capture_output=True, text=True, timeout=1.0)
+        status["redis_metrics_ping"] = {"ok": p.returncode == 0 and (p.stdout or "").strip() == "PONG", "detail": (p.stdout or p.stderr).strip()}
+    except Exception as e:
+        status["redis_metrics_ping"] = {"ok": False, "error": str(e)}
 
     base_url = f"http://127.0.0.1:{context_port}"
     status["context_engine_health"] = {"url": f"{base_url}/health", **_doctor_check_http_ok(f"{base_url}/health", timeout_s=1.0)}
@@ -1032,6 +1707,8 @@ def cmd_compute_status(args: argparse.Namespace) -> int:
         broker_url = f"redis://127.0.0.1:{redis_port}/0"
         os.environ["EVE_REDIS_URL"] = broker_url
         os.environ.setdefault("CHATSTATS_REDIS_URL", broker_url)
+        os.environ.setdefault("CHATSTATS_METRICS_REDIS_URL", f"redis://127.0.0.1:{redis_metrics_port}/0")
+        os.environ.setdefault("CHATSTATS_LIMITER_REDIS_URL", f"redis://127.0.0.1:{redis_metrics_port}/0")
 
         from backend.celery_service.app import get_celery_app  # type: ignore
 
@@ -1101,6 +1778,7 @@ def build_parser() -> argparse.ArgumentParser:
     pcompute_sub.add_parser("doctor", help="Check compute-plane readiness", parents=[common_sub]).set_defaults(func=cmd_compute_doctor)
     pup = pcompute_sub.add_parser("up", help="Start Redis + Context Engine + Celery workers", parents=[common_sub])
     pup.add_argument("--redis-port", type=int, default=6379)
+    pup.add_argument("--redis-metrics-port", type=int, default=None, help="Metrics Redis port (default: redis-port + 1)")
     pup.add_argument("--context-port", type=int, default=3031)
     pup.add_argument("--celery-concurrency", type=int, default=250)
     pup.add_argument("--no-redis", action="store_true")
@@ -1113,6 +1791,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pstat = pcompute_sub.add_parser("status", help="Show compute-plane status", parents=[common_sub])
     pstat.add_argument("--redis-port", type=int, default=6379)
+    pstat.add_argument("--redis-metrics-port", type=int, default=None, help="Metrics Redis port (default: redis-port + 1)")
     pstat.add_argument("--context-port", type=int, default=3031)
     pstat.set_defaults(func=cmd_compute_status)
 
@@ -1122,10 +1801,27 @@ def build_parser() -> argparse.ArgumentParser:
     pan.add_argument("--chat-id", type=int, default=None, help="Chat ID (optional; derived from conversation)")
     pan.add_argument("--latest", action="store_true", help="Use latest conversation (default if no ids provided)")
     pan.add_argument("--redis-port", type=int, default=6379, help="Redis port to use when enqueuing (must match compute up)")
+    pan.add_argument("--redis-metrics-port", type=int, default=None, help="Metrics Redis port (default: redis-port + 1)")
     pan.add_argument("--wait", action="store_true", help="Wait for analysis completion")
     pan.add_argument("--timeout-seconds", type=float, default=900.0, help="Max seconds to wait (default: 900)")
     pan.add_argument("--require-embeddings", action="store_true", help="When waiting, also require embeddings rows for this conversation")
     pan.set_defaults(func=cmd_compute_analyze)
+
+    pan_chat = pcompute_sub.add_parser(
+        "analyze-chat",
+        help="Enqueue analysis for a batch of conversations in a chat (fast) and optionally wait",
+        parents=[common_sub],
+    )
+    pan_chat.add_argument("--pass", dest="pass_name", default="basic", help="Analysis pass name (default: basic)")
+    pan_chat.add_argument("--chat-id", type=int, default=None, help="Chat ID (default: top chat by message volume)")
+    pan_chat.add_argument("--limit", type=int, default=50, help="Max conversations to enqueue (default: 50)")
+    pan_chat.add_argument("--redis-port", type=int, default=6379, help="Redis broker port (must match compute up)")
+    pan_chat.add_argument("--redis-metrics-port", type=int, default=None, help="Metrics Redis port (default: redis-port + 1)")
+    pan_chat.add_argument("--wait", action="store_true", help="Wait (bounded) and report throughput")
+    pan_chat.add_argument("--timeout-seconds", type=float, default=60.0, help="Max seconds to wait (default: 60)")
+    pan_chat.add_argument("--poll-interval-seconds", type=float, default=1.0, help="Polling interval (default: 1s)")
+    pan_chat.add_argument("--require-embeddings", action="store_true", help="When waiting, require embeddings for all selected conversations")
+    pan_chat.set_defaults(func=cmd_compute_analyze_chat)
 
     pdb = sub.add_parser("db", help="Serverless eve.db access helpers", parents=[common_sub])
     pdb_sub = pdb.add_subparsers(dest="db_cmd", required=True)

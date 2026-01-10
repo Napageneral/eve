@@ -1,8 +1,29 @@
-# Eve — CLI-first personal communications database
+## Eve — CLI-first personal communications database
 
 **Goal:** make your personal communications (iMessage + contacts + derived analysis) available to agents as **local files + local query tools**, without requiring an Electron UI.
 
 **Non-goal:** modify or break the existing `ChatStats/` app. This repo is a clean extraction/port.
+
+---
+
+## 0) 2026 pivot: single-binary Go Eve (no Python, Gemini-only for now)
+
+We are pivoting Eve to a **single Go binary** for:
+- **ETL** (read Apple DBs → write `eve.db`)
+- **Compute** (durable embedded queue + high-concurrency conversation analysis + embeddings)
+- **CLI** (agent-friendly, stable output)
+
+Key decisions (confirmed):
+- **Cloud is allowed**: Eve can send message content to **Gemini** for both analysis and embeddings.
+- **Models**: default to **Gemini Flash 3.0** for conversation analysis and the **latest Gemini embedding model** for embeddings (configurable).
+- **No local models / no sidecar binaries for now**: everything ships as a single `eve` binary.
+- **Port ETL away from Python**: Python is not a long-term distribution/runtime dependency.
+- **Vector search** is a stretch goal; prefer **SQLite-native** support if feasible.
+
+Ralph execution docs (super detailed) live here:
+- `docs/ralph/README.md`
+- `docs/ralph/GO_SINGLE_BINARY_PLAN.md`
+- `docs/ralph/EXECUTION_CHECKLIST.md`
 
 ---
 

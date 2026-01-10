@@ -1,29 +1,18 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help tree go-build go-test py-check py-install py-test ts-check ts-install test test-ts test-py test-go
+.PHONY: help tree ts-check ts-install test test-ts go-test go-build
+.PHONY: ralph-verify
 
 help:
-	@echo "Eve - CLI-first personal communications database"
+	@echo "Eve - Single Go binary for iMessage analysis"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make go-build    Build Go binary (bin/eve)"
-	@echo "  make go-test     Run Go tests"
 	@echo "  make tree        Show repo tree (high-level)"
-	@echo "  make py-check    Sanity-check Python backend import graph"
+	@echo "  make go-build    Build eve binary"
+	@echo "  make go-test     Run Go tests"
 	@echo "  make ts-check    Sanity-check TypeScript workspace (tsc)"
 	@echo "  make ts-install  Install Bun/TS deps (ts/)"
-	@echo "  make py-install  Create venv + install minimal Python deps for CLI/ETL"
-	@echo "  make test        Run all Eve tests (Go + TS + Python)"
-
-# --- Go ---
-
-go-build:
-	@go build -o bin/eve ./cmd/eve
-
-go-test:
-	@go test ./...
-
-test-go: go-test
+	@echo "  make test        Run all Eve tests (TS + Go)"
 
 # --- utils ---
 
@@ -31,18 +20,15 @@ tree:
 	@echo "./"
 	@find . -maxdepth 2 -type d \( -name .git -o -name node_modules -o -name __pycache__ \) -prune -o -type d -print | sed 's|^\./||' | sort
 
-# --- Python ---
+# --- Go ---
 
-py-check:
-	@python3 -c "import sys; sys.path.insert(0, 'python'); import backend; print('OK: imported backend as namespace package')"
+go-build:
+	@command -v go >/dev/null 2>&1 || (echo "go is required to build" && exit 1)
+	@go build -o bin/eve ./cmd/eve
 
-py-install:
-	@python3 -m venv .venv
-	@.venv/bin/python -m pip install --upgrade pip
-	@.venv/bin/python -m pip install -r python/requirements-cli.txt
-
-py-test: py-install
-	@.venv/bin/python -m unittest -v python/tests/test_real_full_pipeline.py
+go-test:
+	@command -v go >/dev/null 2>&1 || (echo "go is required to run tests" && exit 1)
+	@go test ./...
 
 # --- TypeScript ---
 
@@ -54,7 +40,7 @@ ts-install:
 
 # --- Tests ---
 
-test: test-go test-ts test-py
+test: test-ts go-test
 
 test-ts:
 	@command -v bun >/dev/null 2>&1 || (echo "bun is required to run tests" && exit 1)
@@ -63,4 +49,21 @@ test-ts:
 	@bun run --bun test/unit/encoding-endpoint.test.ts
 	@bun run --bun test/unit/preset-ea-spawning.test.ts
 
-test-py: py-test
+# --- Ralph (agent loop verification harness) ---
+#
+# This target is intentionally:
+# - fast
+# - non-interactive
+# - safe (no real-data ETL, no cloud calls)
+#
+# It provides the "Feedback" mechanism for Ralph loops.
+ralph-verify:
+	@echo "Ralph verify: starting"
+	@echo ""
+	@echo "1) Go tests"
+	@command -v go >/dev/null 2>&1 || (echo "go not found" && exit 1)
+	@echo "Running gofmt + go test ./..."
+	@gofmt -w $$(find . -name '*.go' -not -path './ts/node_modules/*' 2>/dev/null || true) >/dev/null 2>&1 || true
+	@go test ./...
+	@echo ""
+	@echo "Ralph verify: OK"

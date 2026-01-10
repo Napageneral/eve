@@ -5,54 +5,206 @@ Eve is a CLI-first personal communications database. It ingests iMessage + conta
 ## Installation
 
 ```bash
-# Install the eve binary (single Go binary, no dependencies)
-curl -sSL https://eve.install.sh | bash
+# Eve runs from source (requires Python 3.10+ and the repo)
+cd /path/to/eve
+make py-install  # Creates .venv with dependencies
 
-# Or build from source
-cd /path/to/eve && make build
+# The CLI is at bin/eve (Python script that auto-activates venv)
+./bin/eve --help
+```
+
+## Two CLIs
+
+Eve has two CLI implementations:
+
+| CLI | Path | Description |
+|-----|------|-------------|
+| **Python CLI** | `bin/eve` | Full-featured: ETL, sync, compute plane, analysis |
+| **Go CLI** | `bin/eve-go` | Lightweight: prompts, packs, encoding, context compile |
+
+**Build the Go CLI:**
+```bash
+make go-build  # Creates bin/eve-go
+```
+
+**Go CLI commands:**
+```bash
+eve-go version                     # Version info
+eve-go prompt list                 # List available prompts
+eve-go prompt show <id>            # Show prompt details
+eve-go pack list                   # List context packs
+eve-go pack show <id>              # Show pack definition
+eve-go resources export --dir DIR  # Export embedded resources
+eve-go db query --sql "..."        # Query eve.db
+eve-go encode conversation --conversation-id N --stdout  # Encode conversation
+eve-go context compile --prompt <id>  # Compile context pack
 ```
 
 ## Quick Start
 
 ```bash
-# Initialize: ETL iMessage + contacts into eve.db
+# 1. Initialize: create eve.db and run migrations
 eve init
 
-# Check what got synced
-eve db query --sql "SELECT COUNT(*) AS messages FROM messages"
-eve db query --sql "SELECT COUNT(*) AS chats FROM chats"
-eve db query --sql "SELECT COUNT(*) AS contacts FROM contacts"
+# 2. Sync: ETL iMessage + contacts into eve.db
+eve sync
+
+# 3. Check what got synced
+eve status
 ```
 
 ## CLI Commands
 
-### `eve init`
-Run full ETL: extract iMessage + AddressBook contacts into `eve.db`.
+### Core Data Commands
 
-### `eve db query`
-Execute read-only SQL against `eve.db` and return stable JSON:
+#### `eve init`
+Initialize Eve: create app directory and run database migrations.
 
 ```bash
-eve db query --sql "SELECT id, chat_name FROM chats ORDER BY last_message_date DESC LIMIT 10"
+eve init
+# Output: {"ok":true,"app_dir":"...","db_path":"...","migrated":true}
 ```
 
-### `eve prompt list` / `eve prompt show <id>`
-List available prompts or show a specific prompt's content.
+#### `eve sync`
+Run one-shot ETL import from `chat.db` into `eve.db`.
 
-### `eve pack list` / `eve pack show <id>`
-List available context packs or show a specific pack's definition.
+```bash
+# Full import (first run)
+eve sync --race-mode
 
-### `eve encode conversation <conversation_id>`
-Encode a conversation into LLM-ready text (for analysis/embeddings).
+# Import only last 30 days
+eve sync --since-days 30
 
-### `eve compute run`
-Start the compute engine to process analysis + embedding jobs from the queue.
+# Import since specific date
+eve sync --since "2025-01-01T00:00:00Z"
 
-### `eve compute test-casey-convo-all`
-Benchmark: run `convo-all-v1` analysis on all Casey Adams conversations.
+# Skip AddressBook contacts
+eve sync --no-contacts
+```
 
-### `eve compute test-casey-embeddings`
-Benchmark: run embeddings on all Casey conversations + facets.
+#### `eve status`
+Print database counts and live sync state.
+
+```bash
+eve status
+# Output: {"ok":true,"counts":{"messages":12345,"chats":100,...},"live_sync_state":{...}}
+```
+
+#### `eve watch`
+Run live sync watcher (incremental updates).
+
+```bash
+# Run for 60 seconds
+eve watch --seconds 60
+
+# Run until 10 batches processed
+eve watch --max-batches 10
+
+# Custom poll interval
+eve watch --poll-interval-ms 100
+```
+
+### Database Access
+
+#### `eve db query`
+Execute raw SQL against `eve.db` and return stable JSON.
+
+```bash
+# Count messages
+eve db query --sql "SELECT COUNT(*) AS total FROM messages"
+
+# List recent chats
+eve db query --sql "SELECT id, chat_name, total_messages FROM chats ORDER BY last_message_date DESC LIMIT 10"
+
+# Custom row limit
+eve db query --sql "SELECT * FROM messages" --limit 500
+
+# Enable writes (dangerous)
+eve db query --sql "UPDATE contacts SET name = 'Test' WHERE id = 1" --write
+```
+
+### Compute Plane (Analysis + Embeddings)
+
+#### `eve compute doctor`
+Diagnose compute-plane readiness (Redis, Celery, Context Engine).
+
+```bash
+eve compute doctor
+# Output: {"ok":true,"checks":{"redis_running":{"ok":true},...},"advice":[...]}
+```
+
+#### `eve compute up`
+Start compute plane processes (Redis + Context Engine + Celery workers).
+
+```bash
+# Start everything
+eve compute up
+
+# Custom ports
+eve compute up --redis-port 6380 --context-port 3032
+
+# Custom worker concurrency
+eve compute up --celery-concurrency 100
+
+# Skip specific components
+eve compute up --no-redis --no-context-engine
+```
+
+#### `eve compute down`
+Stop compute plane processes.
+
+```bash
+eve compute down
+```
+
+#### `eve compute status`
+Report compute plane process status.
+
+```bash
+eve compute status
+# Output: {"ok":true,"status":{"redis":{"running":true},"celery_ping":{"ok":true,"workers":[...]},...}}
+```
+
+#### `eve compute analyze`
+Trigger analysis pass for a conversation (optionally wait).
+
+```bash
+# Analyze latest conversation
+eve compute analyze --latest
+
+# Analyze specific conversation
+eve compute analyze --conversation-id 12345
+
+# Wait for completion
+eve compute analyze --conversation-id 12345 --wait --timeout-seconds 300
+
+# Require embeddings to be generated too
+eve compute analyze --conversation-id 12345 --wait --require-embeddings
+```
+
+### Utility Commands
+
+#### `eve paths`
+Print computed paths (app dir, db path).
+
+```bash
+eve paths
+# Output: {"ok":true,"app_dir":"...","db_path":"...","source_chat_db":"..."}
+```
+
+#### `eve migrate`
+Migrate an existing ChatStats `central.db` into Eve's `eve.db` location.
+
+```bash
+# Default: migrate from ~/Library/Application Support/ChatStats/central.db
+eve migrate
+
+# Custom source
+eve migrate --from-db /path/to/central.db
+
+# Overwrite existing
+eve migrate --force
+```
 
 ## Where the DB lives
 
@@ -163,11 +315,21 @@ LIMIT 50;
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `EVE_APP_DIR` | Base directory for Eve data | `~/Library/Application Support/Eve` |
+| `EVE_SOURCE_CHAT_DB` | Override source chat.db path | `~/Library/Messages/chat.db` |
 | `GEMINI_API_KEY` | Gemini API key for analysis/embeddings | (required for compute) |
-| `EVE_GEMINI_ANALYSIS_MODEL` | Model for conversation analysis | `gemini-3-flash-preview` |
-| `EVE_GEMINI_EMBED_MODEL` | Model for embeddings | `gemini-embedding-001` |
-| `EVE_GEMINI_ANALYSIS_RPM` | Analysis requests per minute (0=auto) | `0` |
-| `EVE_GEMINI_EMBED_RPM` | Embedding requests per minute (0=auto) | `0` |
+| `EVE_REDIS_URL` | Redis broker URL | `redis://127.0.0.1:6379/0` |
+| `EVE_SQLITE_BUSY_TIMEOUT_MS` | SQLite busy timeout | `5000` |
+
+## Global Flags
+
+All commands accept these flags:
+
+| Flag | Description |
+|------|-------------|
+| `--app-dir PATH` | Override Eve app directory |
+| `--source-chat-db PATH` | Override source chat.db path |
+| `--sqlite-busy-timeout-ms MS` | Override SQLite busy timeout |
+| `--pretty` | Pretty-print JSON output |
 
 ## Prompts & Packs
 
@@ -185,3 +347,19 @@ With a Tier-3 Gemini API key:
 - **Facet embeddings:** ~300+ embeddings/sec
 
 The compute engine includes an adaptive controller that automatically adjusts concurrency based on network conditions and API rate limits.
+
+## Testing
+
+```bash
+# Run all tests
+make test
+
+# Run only Go tests
+make go-test
+
+# Run only Python tests
+make py-test
+
+# Run only TypeScript tests
+make test-ts
+```

@@ -1,24 +1,23 @@
-# Ralph Agent Instructions for Eve (in-place in Nexus)
+# Ralph Agent Instructions for Eve
 
 ## Context
 
-You are evolving Eve **in-place** at:
+You are completing the **Go ETL migration** for Eve at `/Users/tyler/Desktop/projects/eve/`.
 
-- `/Users/tyler/nexus/home/projects/eve`
+**Goal**: Make `eve sync` actually copy data from chat.db to eve.db so the Go binary is fully self-sufficient. After this phase, all Python code will be deleted.
 
-**Goal**: Make Eve maximally portable as:
-- a **single Go CLI** exposing core primitives (raw SQL, encoding, context compilation) with stable JSON stdout
-- plus a **skill-shippable resources folder** containing editable prompt + pack files (so users/agents can hack prompts locally)
-
-TypeScript is **reference material only** during the port. The end state is Go-first runtime.
+**Key existing code:**
+- `internal/etl/chatdb.go` — chat.db reader with performance pragmas (already works)
+- `internal/etl/watermark.go` — watermark tracking (already works)
+- `internal/migrate/sql/warehouse/002_core_schema.sql` — target schema (already exists)
 
 ## Absolute Rules
 
 - **ONE story per iteration**
 - **Raw SQL only** (no ORMs)
-- **JSON stdout** — never print message text unless explicitly requested by a flag
-- **Synthetic test fixtures** — use temp SQLite DBs with known rows; do NOT use real user data in tests
-- **No real Gemini calls in unit tests** — use fakes / httptest
+- **JSON stdout** — never print message text unless explicitly requested
+- **Idempotent writes** — use ON CONFLICT clauses
+- **Synthetic test fixtures** — create temp chat.db with known data; do NOT use real user data in tests
 
 ## Your Task (repeat every iteration)
 
@@ -33,7 +32,7 @@ TypeScript is **reference material only** during the port. The end state is Go-f
 ```
 
 6. If verification passes:
-   - Commit: `feat(eve): [ID] - [Title]`
+   - Commit: `feat(eve-go): [ID] - [Title]`
    - Update `scripts/ralph/prd.json`: set `passes: true`
    - Append learnings to `scripts/ralph/progress.txt`
 
@@ -47,3 +46,4 @@ If **ALL** stories have `passes: true`, reply:
 
 <promise>COMPLETE</promise>
 
+Otherwise end normally (the loop will restart).

@@ -1,378 +1,222 @@
-# Ralph Progress Log for Eve (Nexus in-place)
-Started: 2026-01-10
-Phase: go-cli-context-engine
+# Ralph Progress Log for Eve
+Started: 2026-01-08
+Phase: go-etl-complete
 
 ## Codebase Patterns (keep updated)
 
 ### Output + privacy defaults
 - **Stdout contract**: JSON-only by default for all CLI commands.
-- **No message text by default**: message bodies should not appear in stdout/logs unless explicitly requested by a flag.
-
-### Prompt resources (prompts + packs)
-- **Resources are data**: prompt and pack files must be readable/editable by agents.
-- **Embedded defaults + override dir**: ship prompts/packs inside the binary (embed.FS) but allow loading from a user/skill folder on disk.
-- **Canonical location**: resources/ (not ts/).
+- **No message text by default**: message bodies should not appear in stdout/logs unless explicitly requested.
 
 ### Data + queries
 - **Raw SQL only**: do not introduce ORMs for queries. Use `database/sql` with explicit SQL.
-- **Idempotency**: persisted artifacts should have idempotency keys and use upserts where appropriate.
-- **Separate DBs**: eve.db (warehouse) and eve-queue.db (durable queue) remain the model.
+- **Idempotency**: every persisted artifact must have a unique idempotency key and use upserts (ON CONFLICT DO UPDATE/IGNORE).
+- **Separate DBs**: eve.db (warehouse) and eve-queue.db (durable queue).
 
 ### Testing
 - **Ralph harness**: `./scripts/ralph/verify.sh`
-- **NO real Gemini calls in unit tests**: use fakes / httptest.
-- **Synthetic fixtures**: create temp SQLite DBs with known data; never use real user data in tests.
+- **NO real Gemini calls in unit tests**: use `httptest` fake servers.
+- **Synthetic fixtures for ETL tests**: create temp chat.db with known data, verify eve.db output.
 
-## Notes / Learnings (append after each story)
+### Go conventions
+- **Single binary**: no Python runtime required.
+- **Apple timestamps**: nanoseconds since 2001-01-01 (add 978307200 to convert to Unix).
+- **Config precedence**: env vars > config file > defaults.
 
-### EVGO-000 (completed manually 2026-01-10)
-- Added go.mod for github.com/tylerchilds/eve (Go 1.22)
-- Added cmd/eve/main.go with cobra CLI skeleton
-- Commands: version, init, db query, compute run, prompt list, pack list, encode conversation
-- Added Makefile targets: go-build, go-test
-- Skill doc renamed from eve-db.md to eve.md
+## Key Files
 
-### EVGO-000: Bootstrap Go module + CLI skeleton (2026-01-10)
-- Established `github.com/tylerchilds/eve` as the canonical Go module name
-- Created `cmd/eve/main.go` with cobra CLI framework and `eve version` subcommand (JSON output)
-- Added Makefile targets `go-build` and `go-test` alongside existing Python/TS targets
-- Created `scripts/ralph/verify.sh` for fast, deterministic Go test execution
-- Note: The main.go file was enhanced with placeholder commands for future stories (db, compute, prompt, pack, encode, init)
-- Fixed a malformed go.sum entry that was blocking module installation
+- `internal/etl/chatdb.go` — chat.db reader (already implemented)
+- `internal/etl/watermark.go` — watermark tracking (already implemented)
+- `internal/migrate/sql/warehouse/002_core_schema.sql` — target schema
+- `cmd/eve/main.go` — CLI entry point
 
-### EVGO-018: Resources consolidation (2026-01-10)
-- Created `resources/prompts/` and `resources/packs/` directories
-- Copied all 31 prompt files (*.prompt.md) from ts/eve/prompts preserving subdirectory structure (analysis/, chat/, documents/, fun/, intelligence/, intentions/, test/, tools/, ui/)
-- Copied all 22 pack files (*.pack.yaml) from ts/eve/context-packs preserving subdirectory structure (global/)
-- Also copied some non-conforming files (InteractionAgent.md, agents.md, AGENTS.md, dynamic/*.ts) for completeness
-- Added comprehensive resources/README.md explaining:
-  - Embedded defaults via embed.FS
-  - Override strategy with --resources-dir flag and EVE_RESOURCES_DIR env var
-  - File formats (YAML frontmatter for prompts, YAML for packs)
-  - Usage commands for listing/showing prompts and packs
-  - Philosophy: resources are data, not code (editable, versionable, shippable with skills)
-- Verification passed with no test changes needed (no Go tests yet depend on resources)
-- Resources directory now becomes canonical; ts/ paths are reference material only
+## Previous Phase Summary (EVGO-001 to EVGO-010)
 
-### EVGO-019: Go resources loader (2026-01-10)
-- Implemented `internal/resources` package with embed.FS for resources/prompts and resources/packs
-- Added symlinks in internal/resources/ (embedded_prompts -> ../../resources/prompts, embedded_packs -> ../../resources/packs) for embed.FS to work
-- Symlinks are gitignored since they're build-time artifacts
-- Loader supports both embedded resources and override directory via --resources-dir flag and EVE_RESOURCES_DIR env var
-- Prompt parsing: splits on --- delimiters, parses YAML frontmatter into structured Prompt{ID, Name, Version, Category, Tags, Frontmatter, Body}
-- Pack parsing: unmarshals YAML into typed Pack{ID, Name, Slices...} with typed Slice structs
-- Added gopkg.in/yaml.v3 dependency for YAML parsing
-- Implemented ListPrompts/LoadPrompt and ListPacks/LoadPack methods on Loader
-- Updated cmd/eve/main.go to add global --resources-dir flag with EVE_RESOURCES_DIR fallback
-- Implemented `eve prompt list`, `eve prompt show [id]`, `eve pack list`, `eve pack show [id]` commands
-- All CLI output is JSON-only (no message text printed unless explicitly requested)
-- Unit tests cover:
-  - Loading convo-all-v1 prompt from embedded FS (validates ID, name, category, tags, body content)
-  - Loading analyses-all-comprehensive pack from embedded FS (validates ID, name, slices, retrieval params)
-  - Listing prompts and packs (validates count > 20 prompts, > 15 packs)
-  - Override directory support (creates temp dir with custom prompt, validates loading)
-- Key learning: embed.FS cannot use .. in paths, so symlinks are necessary to embed files from parent directories
-- EVGO-020 is effectively already complete since we implemented eve prompt/pack list/show commands as part of this story
+All 10 stories passed:
+- Go module + CLI skeleton
+- Config loading with env overrides
+- Embedded SQL migrations
+- Durable queue (enqueue/lease/ack/fail)
+- Gemini HTTP client with retries
+- Compute engine with worker pools
+- Analysis job handler
+- Embeddings pipeline with batching
+- ETL bootstrap (message count + watermark only)
 
-### EVGO-021: CLI primitive: eve db query (2026-01-10)
-- Implemented `internal/db` package with query execution primitives
-- Added `Execute` function that runs SQL queries against SQLite databases with safety checks
-- SQL safety validation: only SELECT and WITH statements allowed by default
-- Added `--write` flag to allow INSERT/UPDATE/DELETE/ALTER operations (bypasses safety check)
-- Added `--db` flag to specify database target:
-  - `warehouse` (default): ~/.config/eve/eve.db
-  - `queue`: ~/.config/eve/eve-queue.db
-  - `path:/abs/file.db`: absolute path to any SQLite database
-- JSON output format: `{ ok: bool, row_count: int, rows: []map[string]interface{}, error: string }`
-- Updated `cmd/eve/main.go` to wire up `eve db query` command with all flags
-- Added github.com/mattn/go-sqlite3 dependency for SQLite driver
-- Unit tests cover:
-  - SQL safety checks (SELECT/WITH allowed, DELETE/UPDATE/INSERT/DROP/ALTER blocked)
-  - Database spec parsing (warehouse, queue, path:, validation of absolute paths)
-  - SELECT query execution with row results
-  - DELETE blocked without --write flag
-  - DELETE allowed with --write flag (note: db.Query doesn't support mutations, but safety check is bypassed)
-  - WITH (CTE) query support
-- Key learning: SQLite driver requires CGO, which is enabled by default in Go
-- Key learning: db.Query() in database/sql doesn't support mutation queries (returns error), but we allow them through when --write is set since the safety check is the main gate
+**Gap**: `eve sync` currently only counts messages and updates watermark. It does NOT copy data.
 
-### EVGO-022: CLI primitive: eve encode conversation (2026-01-10)
-- Implemented `internal/encoding` package with conversation encoding primitives
-- Added `LoadConversation` function that loads messages from SQLite database using iMessage schema
-- Message encoding format: "SenderName: message text [Attachment] [reactions]"
-- Supports optional timestamp prefix: "[3:45pm] SenderName: message text"
-- Attachment encoding: "[Image]" for images, "[Attachment: filename]" for other files
-- Reaction encoding: "[❤️, 👍(2)]" with counts for multiple reactions
-- EncodeOptions control what's included: sender, attachments, reactions, start date, send time
-- Added `EncodeConversationToFile` that writes transcript to file and returns JSON metadata
-- Added `EncodeConversationToString` that returns transcript as string
-- Updated `cmd/eve/main.go` to add `eve encode conversation` command
-- Command flags:
-  - `--conversation-id <id>` (required): conversation ID to encode
-  - `--stdout`: print transcript to stdout instead of file
-  - `--output <path>`: custom output file path
-  - `--db <path>`: custom database path (default: ~/.config/eve/eve.db)
-- Default behavior: writes to file, outputs JSON metadata { success, file_path, token_count, message_count }
-- Privacy-focused: no message text in default JSON output (only with --stdout)
-- Token counting: rough estimate using length / 4
-- Unit tests cover:
-  - LoadConversation with synthetic test database (creates handle, contact, message tables)
-  - EncodeMessage with various options (sender, text, attachments, reactions, timestamps)
-  - EncodeConversation with multiple messages (sorted by timestamp)
-  - EncodeConversationToFile writes file and returns metadata
-  - EncodeConversationToString returns encoded text
-  - reactionTypeToEmoji mapping for iMessage reaction types (2000-2005)
-- Key learning: iMessage dates are stored as nanoseconds since 2001-01-01, requires conversion
-- This becomes the canonical encoding implementation (TypeScript version is reference only)
+---
 
-### EVGO-023: Go context engine v1 - compile packs with static_snippet adapter (2026-01-10)
-- Implemented `internal/contextengine` package with core compilation types:
-  - ExecuteRequest/ExecuteResult for successful compilation
-  - ExecuteError for various failure modes (PromptNotFound, PackNotFound, BudgetExceeded, ValidationError, etc.)
-  - ContextLedger and LedgerItem for tracking token usage across slices
-  - HiddenPart for compiled context data (not shown to user in prompt)
-  - ExecutionInfo for metadata about how to execute the prompt
-- Implemented variable substitution in `variables.go`:
-  - Handles {{variable}} syntax in pack slice params
-  - Supports pure variable replacement: {{varName}} → value
-  - Supports template strings: "Hello {{name}}" → "Hello Alice"
-  - Built-in variables: {{source_chat}} → context.SourceChat
-  - User variables: {{user_var}} → context.Vars["user_var"]
-  - Recursive resolution for nested objects and arrays
-  - substituteInPrompt for prompt body variable replacement (supports both {{var}} and {{{var}}})
-- Implemented static_snippet retrieval adapter in `adapters.go`:
-  - Simplest adapter: returns static text from params.text
-  - Token estimation: length / 4 (rough approximation)
-  - Registered in retrievalAdapters registry for use by engine
-- Implemented context engine in `engine.go`:
-  - Engine.Execute compiles a context pack given a prompt ID
-  - Loads prompt and pack from resources.Loader
-  - Extracts default_pack from prompt frontmatter (handles both flat and nested context.default_pack)
-  - Compiles all slices by calling appropriate retrieval adapters
-  - Variable substitution applied to slice params before retrieval
-  - Token budgeting: checks total tokens against budget with safety factor (0.9)
-  - V1 budget fitting: just errors if over budget (no trimming/compression yet)
-  - Returns ExecuteResult with ledger, hidden parts, visible prompt, and execution metadata
-  - Returns ExecuteError for various failure cases with actionable suggestions
-- Token counting strategy: use estimated_tokens from pack as baseline, or actual_tokens if higher
-  - This handles cases where estimated_tokens is set in pack but retrieval calculates actual tokens
-  - Ensures budget checks work correctly when pack author provides token estimates
-- Added `eve context compile` command to CLI:
-  - Required flags: --prompt <id>
-  - Optional flags: --pack <id>, --source-chat <id>, --vars <json>, --budget <tokens>
-  - JSON-only output (either ExecuteResult or ExecuteError)
-  - Uses resources loader with --resources-dir override support
-- Comprehensive unit tests in `engine_test.go`:
-  - staticSnippetAdapter basic functionality
-  - Variable substitution: pure variables, template strings, built-in variables, missing variable errors
-  - TestContextEngineCompile_TestStaticPack: compiles test-v1 prompt with test-static pack from embedded resources
-  - TestContextEngineCompile_WithVariables: creates temp prompt/pack with variable substitution, verifies substitution in both params and prompt body
-  - TestContextEngineCompile_PromptNotFound: validates error handling for missing prompt
-  - TestContextEngineCompile_PackNotFound: validates error handling for missing pack
-  - TestContextEngineCompile_BudgetExceeded: validates budget checking with large estimated_tokens
-- All tests pass with synthetic fixtures (no real user data, no real Gemini calls)
-- Key architectural decision: v1 uses estimated_tokens from pack as authoritative when provided
-  - Future dynamic retrievals (convos_context_data, analyses_context_data) will calculate actual tokens
-  - Budget fitting logic (shrink_time, compress_encoding, drop_candidates) deferred to future stories
-- This establishes the foundation for porting TS context engine runtime into Go CLI
+## Story Progress (append after each story)
 
-### EVGO-024: Go retrieval adapter - convos_context_data (DB-backed) (2026-01-10)
-- Implemented `convosContextDataAdapter` in `convos_adapter.go`:
-  - Retrieves conversation context from eve.db using raw SQL (no ORMs)
-  - Supports chat_ids filtering: directly query conversations from specific chats
-  - Supports contact_ids expansion: expands contact IDs to their associated chat IDs via chat_participants table
-  - Time filtering with presets: "day" (last 1 day), "week" (last 7 days), "month" (last 30 days), "year" (last 365 days), "all" (no time filter)
-  - Time filtering with explicit dates: start_date/end_date as ISO 8601 strings
-  - Ordering support: "timeAsc" (oldest first), "timeDesc" (newest first)
-  - Token budget: token_max parameter stops loading conversations when budget is reached
-  - Uses estimated tokens (length / 4) to track budget during loading
-  - Encodes conversations as "SenderName: message text" format (similar to existing Go encoding)
-  - Returns empty result gracefully when no conversations match filters
-- Parameter parsing utilities:
-  - parseIntSlice: handles []interface{} from JSON unmarshaling (float64, int, string)
-  - parseInt: handles multiple numeric types with default fallback
-  - parseString: handles string params with default fallback
-  - parseTimeParams: extracts time filtering (preset or explicit dates)
-- Database operations:
-  - collectChatIDsFromContacts: expands contact_ids to chat_ids via chat_participants join
-  - filterConversationsByTime: queries conversations table with time + chat_id filters
-  - orderConversations: orders conversation IDs by start_time ASC/DESC
-  - loadAndEncodeConversations: loads messages for each conversation, encodes, respects token budget
-  - loadConversationText: loads and formats messages for a single conversation
-- Comprehensive unit tests in `convos_adapter_test.go`:
-  - setupTestDB: creates synthetic eve.db with handles, contacts, chats, chat_participants, conversations, messages
-  - Test data: Alice (contact 1, chat 1) and Bob (contact 2, chat 2) with conversations at different times (yesterday, last week, last month, last year)
-  - TestConvosAdapter_ChatIDsFilter: verifies chat_ids filtering (Alice only)
-  - TestConvosAdapter_ContactIDsExpansion: verifies contact_ids expansion (Bob -> chat 2)
-  - TestConvosAdapter_TimePresetWeek: verifies "week" preset filters conversations to last 7 days
-  - TestConvosAdapter_TimePresetMonth: verifies "month" preset filters to last 30 days
-  - TestConvosAdapter_OrderTimeDesc: verifies timeDesc ordering (most recent first)
-  - TestConvosAdapter_TokenMax: verifies token budget stops loading when exceeded
-  - TestConvosAdapter_EmptyResult: verifies graceful empty result for non-existent chats
-  - TestConvosAdapter_NoDBPath: verifies error when no database path provided
-- All tests pass with synthetic fixtures (no real user data)
-- Registered adapter in retrievalAdapters registry as "convos_context_data"
-- V1 limitations (deferred to future stories):
-  - No facet filtering (match.entities, match.topics, match.emotions) - tables exist but filtering not implemented
-  - No similarity ordering (simAsc, simDesc) - requires vector embeddings
-  - No encode options (include_sender, include_attachments, include_reactions) - using simple "SenderName: text" format
-- This adapter enables packs like convos-year-full to load dynamic conversation context from the database
+### EVGO-011 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented SyncHandles() to copy handles from chat.db to eve.db
+- Reads all handles with ROWID and identifier from chat.db handle table
+- Inserts into contacts table using handle ROWID as contact_id (preserves FK references)
+- Inserts into contact_identifiers with type detection (email if contains @, else phone)
+- Idempotent via check-before-insert pattern (no UNIQUE constraint on contact_identifiers yet)
+**Files changed:**
+- internal/etl/handles.go (new)
+- internal/etl/handles_test.go (new)
+**Learnings:**
+- Handle ROWID → contact_id mapping is critical for FK consistency with messages later
+- contact_identifiers schema lacks UNIQUE constraint, so used check-then-insert for idempotency
+- Simple @ detection works for email vs phone classification
+- Test helper naming collision: renamed to createTestWarehouseDBWithContacts() to avoid conflict with watermark_test.go
 
-### EVGO-024 (v2): Complete convos_context_data implementation with all features (2026-01-10)
-- Replaced previous incomplete `convos_adapter.go` with comprehensive `convos.go` implementation
-- Added full support for all TS reference features:
-  - **Facet filtering**: Supports match.entities, match.topics, match.emotions via SQL joins on facet tables
-  - **Encode options**: Full control over include_sender, include_attachments, include_reactions
-  - **Attachments & reactions**: Loads and encodes attachments ([Image], [Attachment: filename]) and reactions ([❤️, 👍(2)])
-  - **Complete message hydration**: Queries messages, attachments, reactions for each conversation using joins
-- Architecture improvements:
-  - `ConvosParams` struct for typed parameter parsing (ChatIDs, ContactIDs, Time, TokenMax, Order, Match, Encode, Similarity)
-  - Separate functions for each step: parseConvosParams, resolveTime, collectChatIDs, filterConversationIDs, orderConversationsByTime, loadConversationWithMessages
-  - Uses existing `encoding.Conversation`, `encoding.Message`, `encoding.EncodeConversation` from internal/encoding package
-  - Consistent token estimation (length / 4) across all components
-- Facet filtering implementation:
-  - Queries base conversations by chat_id + time
-  - Applies each facet filter sequentially (entities, topics, emotions) with case-insensitive matching
-  - Uses intersection logic: each filter narrows the result set
-  - Handles empty filter values gracefully (no filter = all pass through)
-- Database schema assumptions:
-  - conversations table: id, chat_id, start_time (ISO 8601), end_time
-  - messages table: id, conversation_id, guid, timestamp (ISO 8601), sender_id, text
-  - contacts table: id, name, is_me
-  - attachments table: id, message_id, mime_type, file_name, is_sticker
-  - reactions table: id, original_message_guid, reaction_type, sender_id
-  - chat_participants table: id, chat_id, contact_id
-  - entities table: id, conversation_id, title
-  - topics table: id, conversation_id, title
-  - emotions table: id, conversation_id, emotion_type
-- Comprehensive unit tests in `convos_test.go` (all tests pass):
-  - setupTestConvosDB: creates realistic test database with 3 conversations, 6 messages, facets
-  - TestConvosContextAdapter_Basic: verifies basic chat_ids filtering
-  - TestConvosContextAdapter_TimeFiltering: verifies "week" preset filters correctly
-  - TestConvosContextAdapter_ContactIDExpansion: verifies contact_ids -> chat_ids expansion
-  - TestConvosContextAdapter_TokenMax: verifies token budget respects limits
-  - TestConvosContextAdapter_OrderTimeDesc: verifies DESC ordering
-  - TestConvosContextAdapter_FacetFiltering_Entities: verifies entity filtering (conv 1 has "Work")
-  - TestConvosContextAdapter_FacetFiltering_Topics: verifies topic filtering (conv 2 has "Health")
-  - TestConvosContextAdapter_FacetFiltering_Emotions: verifies emotion filtering (conv 3 has "Happy")
-  - TestConvosContextAdapter_EncodeOptions: verifies include_sender=false removes "SenderName:"
-  - TestConvosContextAdapter_EmptyResult: verifies empty result for non-existent chat
-  - TestParseConvosParams: validates parameter parsing for all param types
-  - TestResolveTime: validates time preset resolution (day, week, month, year, all, custom dates)
-- Removed old incomplete implementations:
-  - Deleted `convos_adapter.go` (replaced by convos.go)
-  - Deleted `convos_adapter_test.go` (replaced by convos_test.go)
-  - Deleted `analyses_adapter.go` (will be implemented in EVGO-025)
-  - Deleted `analyses_adapter_test.go` (will be implemented in EVGO-025)
-  - Updated adapters.go registry to remove analyses_context_data (will re-add in EVGO-025)
-- This implementation is now feature-complete and matches the TypeScript reference implementation
-- Similarity ordering (simAsc, simDesc) is still TODO - requires vector embeddings (noted in code comments)
-### EVGO-025: Go retrieval adapter - analyses_context_data (DB-backed facets) (2026-01-10)
-- Implemented `analysesContextDataAdapter` in `analyses.go`:
-  - Retrieves structured analysis data (summary, topics, entities, emotions, humor) from eve.db facet tables
-  - Supports chat_ids filtering and contact_ids expansion (reuses helper functions)
-  - Time filtering with presets and explicit dates (reuses time parsing logic)
-  - Ordering support: timeAsc/timeDesc
-  - Token budget: token_max parameter stops loading when budget is reached
-  - Include filter: allows selecting which facets to include (summary, topics, entities, emotions, humor)
-  - Default include: all facets if not specified
-- Format output matches backend format_analysis_block exactly:
-  - Header: ### YYYY-MM-DD — Conversation <id>
-  - Summary: <text> (if included)
-  - Topics: <comma-separated list> (unique, sorted)
-  - Entities: <comma-separated list> (unique, sorted)
-  - Emotions: <comma-separated list> (unique, sorted)
-  - Humor: (bulleted list, max 10 items)
-- Database operations:
-  - loadAnalysisData: loads conversation metadata + all facet data for given conv IDs
-  - loadFacet: helper to load facet data from a table (topics, entities, emotions, humor)
-  - formatAnalysisBlock: formats a single conversation's analysis into text
-- Helper functions (duplicated from convos for independence):
-  - parseIntSlice, parseInt, parseString: parameter parsing
-  - parseTimeParams: time filtering extraction
-  - collectChatIDsFromContacts: expands contact IDs to chat IDs
-  - filterConversationsByTime: queries conversations table with time + chat_id filters
-  - orderConversations: orders conversation IDs by start_time
-- Unit tests in `analyses_test.go`:
-  - setupAnalysesDB: creates synthetic eve.db with facet tables (topics, entities, emotions, humor)
-  - TestAnalysesAdapter: verifies full analysis data retrieval and formatting
-  - All tests pass with synthetic fixtures (no real user data)
-- Registered adapter in retrievalAdapters registry as "analyses_context_data"
-- This adapter enables packs like analyses-all-comprehensive to load structured analysis context from the database
+---
+### EVGO-012 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented SyncChats() to copy chats from chat.db to eve.db
+- Reads all chats with ROWID, chat_identifier, display_name, service_name, and style
+- Inserts into chats table using chat ROWID as id (preserves FK references for messages)
+- Maps style field to is_group boolean: style=43 is group chat, style=45 is 1:1 chat
+- Idempotent via chat_identifier UNIQUE constraint with ON CONFLICT DO UPDATE
+- Handles nullable display_name and service_name fields properly
+**Files changed:**
+- internal/etl/chats.go (new)
+- internal/etl/chats_test.go (new)
+**Learnings:**
+- Chat ROWID → chats.id mapping is critical for FK consistency with messages table
+- Style values 43 (group) and 45 (1:1) are the primary indicators of chat type in iMessage
+- chat_identifier already has UNIQUE constraint in schema, so ON CONFLICT DO UPDATE works cleanly
+- Nullable fields need sql.NullString handling when reading, but can store empty strings on write
+- Test pattern consistent with handles_test.go: synthetic fixture creation + comprehensive edge case coverage
 
-### EVGO-026: Resources UX - eve resources export (2026-01-10)
-- Added `ExportResources` method to resources.Loader:
-  - Exports embedded prompts and packs to a target directory
-  - Preserves directory structure (prompts/..., packs/...)
-  - Walks embedded_prompts and embedded_packs from embed.FS
-  - Creates subdirectories as needed
-  - Returns counts of exported prompts and packs
-- Added `eve resources export` CLI command:
-  - Required flag: --dir <path> (target directory for export)
-  - JSON-only stdout with success status, target_dir, prompt_count, pack_count, total_count
-  - Uses resources.NewLoader with empty path (embedded resources only)
-- Unit test in `export_test.go`:
-  - TestExportResources: exports to temp dir, verifies directory creation
-  - Checks for known files: test/test-v1.prompt.md and test-static.pack.yaml
-  - Validates non-zero counts for prompts and packs
-- This command enables:
-  - Users to export embedded resources for local customization
-  - Skills to ship editable prompt/pack resources
-  - Agents to inspect and modify resources without reading Go source code
-- All tests pass
+---
 
-### EVGO-025: Go retrieval adapter - analyses_context_data (DB-backed facets context) (2026-01-10)
-- Completely rewrote `analyses.go` to match TS reference implementation exactly
-- Key architectural changes from incomplete v1:
-  - **Consolidated query approach**: Uses `getChatConsolidatedAnalysisData` that groups facets by (conversation_id, contact_id)
-  - **Facet filtering support**: Implements `filterConvIDsByFacets` for match.entities, match.topics, match.emotions
-  - **Correct humor table**: Uses `humor_items.snippet` instead of incorrect `humor.description`
-  - **Proper aggregation**: Buckets consolidated rows by conversation_id before formatting
-- Implementation details:
-  - `analysesContextDataAdapter`: Main entry point, matches TS retrieveAnalysesContext flow
-  - `filterConvIDsByFacets`: Filters conversations by time + facets with intersection logic (matches TS exactly)
-  - `getChatConsolidatedAnalysisData`: Queries conversations grouped by (conv_id, contact_id), then queries each facet dimension
-  - `getConvToChatMap`: Maps conversation IDs to chat IDs for grouping
-  - `formatAnalysisBlock`: Formats analysis as markdown (header, summary, topics, entities, emotions, humor)
-  - Token budgeting: Respects token_max parameter, stops loading when budget exceeded
-  - Time filtering: Supports presets (day, week, month, year, all) and explicit dates
-  - Ordering: Supports timeAsc, timeDesc (similarity ordering still TODO)
-- Database schema (matches TS reference):
-  - conversations: id, chat_id, start_time, end_time, summary
-  - messages: id, guid, conversation_id, timestamp, sender_id, text (required for consolidated query)
-  - contacts: id, name, is_me
-  - chat_participants: id, chat_id, contact_id
-  - topics: id, conversation_id, contact_id, chat_id, title
-  - entities: id, conversation_id, contact_id, chat_id, title
-  - emotions: id, conversation_id, contact_id, chat_id, emotion_type
-  - humor_items: id, conversation_id, contact_id, chat_id, snippet
-- Comprehensive unit tests in `analyses_test.go` (all tests pass):
-  - setupTestAnalysesDB: creates synthetic test database with 3 conversations across 2 chats with complete facets
-  - TestAnalysesAdapter_Basic: verifies basic chat_ids filtering and output format (summary, topics, entities, emotions, humor)
-  - TestAnalysesAdapter_TimeFiltering: verifies "week" preset correctly filters out conversations older than 7 days
-  - TestAnalysesAdapter_ContactIDExpansion: verifies contact_ids correctly expand to chat_ids via chat_participants
-  - TestAnalysesAdapter_TokenMax: verifies token budget stops loading when exceeded
-  - TestAnalysesAdapter_OrderTimeDesc: verifies DESC time ordering (most recent first)
-  - TestAnalysesAdapter_FacetFiltering_Entities: verifies entity filtering (only conversations with "Alice" entity)
-  - TestAnalysesAdapter_FacetFiltering_Topics: verifies topic filtering (only conversations with "Health" topic)
-  - TestAnalysesAdapter_FacetFiltering_Emotions: verifies emotion filtering (only conversations with "Excited" emotion)
-  - TestAnalysesAdapter_IncludeFiltering: verifies include parameter controls which sections appear (summary only, no facets)
-  - TestAnalysesAdapter_EmptyResult: verifies graceful empty result for non-existent chats
-  - TestAnalysesAdapter_NoDBPath: verifies error when no DB path provided
-- Registered adapter in adapters.go registry as "analyses_context_data"
-- Parameter parsing helpers:
-  - `parseIncludeList`: extracts include filter (defaults to all: summary, topics, entities, emotions, humor)
-  - `parseMatchParams`: extracts facet filtering (entities, topics, emotions)
-  - `parseIntSlice`, `parseInt`, `parseString`: handle JSON unmarshaling edge cases (float64 from JSON)
-  - `parseTimeParams`: resolves time presets and explicit dates to ISO 8601 strings
-- Output format matches backend exactly:
-  - Header: "### YYYY-MM-DD — Conversation {id}"
-  - Summary: "Summary: {text}" (if included)
-  - Topics: "Topics: A, B, C" (sorted, deduplicated, if included)
-  - Entities: "Entities: X, Y, Z" (sorted, deduplicated, if included)
-  - Emotions: "Emotions: Happy, Sad" (sorted, deduplicated, if included)
-  - Humor: "Humor:\n  - joke 1\n  - joke 2" (up to 10 snippets, if included)
-- This adapter powers overall-v1 style prompts (comprehensive analysis summaries) in packs like analyses-all-comprehensive
-- V1 limitations (same as convos adapter):
-  - No similarity ordering (simAsc, simDesc) - requires vector embeddings (TODO)
-- All tests pass, verification script confirms implementation is correct
+### EVGO-013 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented SyncMessages() to copy messages from chat.db to eve.db
+- Reads messages joined with chat_message_join to get chat_id mapping
+- Converts Apple timestamps (nanoseconds since 2001-01-01) to Go time.Time
+- Maps handle_id → sender_id (contact FK), preserving NULL for is_from_me messages
+- Supports incremental sync via sinceRowID watermark parameter
+- Idempotent via guid UNIQUE constraint with ON CONFLICT DO UPDATE
+**Files changed:**
+- internal/etl/messages.go (new)
+- internal/etl/messages_test.go (new)
+**Learnings:**
+- Apple timestamp conversion: add duration to time.Date(2001,1,1,0,0,0,0,UTC)
+- chat_message_join is critical: message table doesn't have direct chat_id field
+- handle_id from chat.db maps to sender_id in eve.db (foreign key to contacts)
+- is_from_me messages have handle_id=0 or NULL, so sender_id should be NULL
+- guid UNIQUE constraint enables clean idempotency with ON CONFLICT DO UPDATE
+- Incremental sync query: WHERE m.ROWID > ? filters efficiently for watermark
+- Test fixtures need all three tables: message, chat_message_join, and junction data
+
+---
+
+### EVGO-014 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented SyncAttachments() to copy attachments from chat.db to eve.db
+- Reads attachments via message_attachment_join, joined with message table to get message guid
+- Maps message guid → message id for foreign key reference using buildMessageMap()
+- Converts Apple timestamps to Go time.Time for created_date field
+- Stores filename, mime_type, size, uti, is_sticker fields
+- Idempotent via guid UNIQUE constraint with ON CONFLICT DO UPDATE
+- Handles nullable fields properly (filename, uti, mime_type, total_bytes)
+**Files changed:**
+- internal/etl/attachments.go (new)
+- internal/etl/attachments_test.go (new)
+**Learnings:**
+- Attachments require 3-way join: attachment → message_attachment_join → message to get message guid
+- Message guid → message id mapping is necessary because chat.db uses message ROWID but eve.db uses auto-generated id
+- buildMessageMap() helper function makes the mapping efficient (single query, then lookup in memory)
+- Sticker flag (is_sticker) is preserved from chat.db
+- File paths are NOT copied, only metadata (per requirements)
+- Attachment GUID provides clean idempotency via UNIQUE constraint
+- Multiple attachments per message work naturally via message_id FK
+- Test pattern: create both chat.db and eve.db fixtures, populate messages first, then sync attachments
+
+---
+
+### EVGO-015 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Implemented BuildConversations() to group messages into conversations based on time gaps
+- Groups messages by chat_id and orders by timestamp
+- Splits into new conversation when time gap between messages > 3 hours (10800 seconds)
+- Creates conversation records with chat_id, initiator_id, start_time, end_time, message_count, gap_threshold
+- Updates messages.conversation_id to reference their conversation
+- Idempotent via clearConversationAssignments() which rebuilds from scratch each time
+**Files changed:**
+- internal/etl/conversations.go (new)
+- internal/etl/conversations_test.go (new)
+**Learnings:**
+- 3-hour gap threshold matches original ChatStats logic for conversation grouping
+- Initiator_id is set to the sender_id of the first message in each conversation
+- NULL sender_id (is_from_me messages) results in NULL initiator_id for conversation
+- Gap logic: if time since last message > threshold, start new conversation
+- Edge case: gap exactly equal to 3 hours stays in same conversation (only > splits)
+- Idempotency achieved by clearing all existing conversation assignments and rebuilding
+- Test coverage includes: single conversation, multiple conversations with gaps, multiple chats, empty database, idempotency, boundary conditions, and NULL sender handling
+- conversationGroup helper struct holds message IDs for batch updating conversation_id
+
+---
+
+### EVGO-016 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Created internal/etl/sync.go with FullSync() orchestration function
+- FullSync() runs the complete ETL pipeline in correct order:
+  1. SyncHandles (must be first for FK references)
+  2. SyncChats (must be before messages for FK references)
+  3. SyncMessages (incremental via watermark)
+  4. SyncAttachments (requires messages to exist)
+  5. BuildConversations (groups messages into conversations)
+- Updated cmd/eve/main.go to call FullSync() instead of just counting messages
+- Separated dry-run path (counts only) from full sync path (actual data copy)
+- Returns SyncResult with counts for all synced entities
+- Outputs JSON with counts (no message text): handles_synced, chats_synced, messages_synced, attachments_synced, conversations_built
+- Updates watermark after successful sync
+**Files changed:**
+- internal/etl/sync.go (new)
+- cmd/eve/main.go (updated)
+**Learnings:**
+- Order matters: handles → chats → messages → attachments → conversations
+- Each step depends on previous steps for FK consistency
+- GetMaxMessageRowID() helper returns max ROWID for watermark updates
+- Dry-run flag now truly just counts without copying (preserves original behavior)
+- Full sync path copies all data and outputs counts for verification
+- All existing unit tests still pass (each component tested in isolation)
+- Integration happens naturally through FK relationships
+- Eve is now fully self-sufficient for ETL: `eve sync` copies all data from chat.db to eve.db
+
+---
+
+### EVGO-017 (2026-01-08)
+**Status:** ✅ PASSED
+**What changed:**
+- Deleted entire python/ directory (226 files, 37k+ lines removed)
+- Removed all .py files from the repository
+- Updated Makefile: removed py-check, py-install, py-test targets
+- Added go-build and go-test targets to Makefile
+- Updated Makefile help text to reflect Go-first architecture
+- Updated ralph-verify target in Makefile to only run Go tests
+- Updated scripts/ralph/verify.sh to remove Python import check
+- Completely rewrote README.md to describe Eve as single Go binary
+- New README focuses on: eve init, eve sync, eve compute commands
+- Removed all references to Python runtime, Celery, Redis from README
+**Files changed:**
+- python/ (deleted entirely - 226 files)
+- Makefile (updated)
+- README.md (completely rewritten)
+- scripts/ralph/verify.sh (updated)
+**Learnings:**
+- Python codebase was ~38k lines across 226 files
+- All functionality now in Go: ETL, queue, compute engine, Gemini client
+- Verification still passes with only Go tests
+- Ralph verification loop now pure Go (no Python import checks)
+- Eve is now truly a single Go binary with zero Python dependencies
+- README transformation: from multi-language project to simple Go CLI tool
+- Documentation now focuses on concrete commands users can run
+- Final cleanup milestone: Eve extracted from ChatStats is now Go-only
+
+---
+

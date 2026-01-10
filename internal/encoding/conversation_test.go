@@ -15,7 +15,7 @@ func createTestDB(t *testing.T) (string, int64) {
 	t.Helper()
 
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test.db")
+	dbPath := filepath.Join(tempDir, "eve.db")
 
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -23,28 +23,52 @@ func createTestDB(t *testing.T) (string, int64) {
 	}
 	defer db.Close()
 
-	// Create simplified message table schema
+	// Create eve.db schema
 	_, err = db.Exec(`
-		CREATE TABLE handle (
-			ROWID INTEGER PRIMARY KEY,
-			id TEXT,
-			display_name TEXT
+		CREATE TABLE contacts (
+			id INTEGER PRIMARY KEY,
+			name TEXT,
+			is_me INTEGER DEFAULT 0
 		);
 
-		CREATE TABLE contact (
-			ROWID INTEGER PRIMARY KEY,
-			phone_number TEXT,
-			display_name TEXT
+		CREATE TABLE chats (
+			id INTEGER PRIMARY KEY,
+			chat_name TEXT,
+			is_group INTEGER DEFAULT 0
 		);
 
-		CREATE TABLE message (
-			ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
+		CREATE TABLE conversations (
+			id INTEGER PRIMARY KEY,
+			chat_id INTEGER,
+			start_time TEXT,
+			end_time TEXT,
+			summary TEXT
+		);
+
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY,
 			guid TEXT,
-			text TEXT,
-			handle_id INTEGER,
-			date INTEGER,
-			is_from_me INTEGER,
-			FOREIGN KEY (handle_id) REFERENCES handle(ROWID)
+			conversation_id INTEGER,
+			chat_id INTEGER,
+			sender_id INTEGER,
+			content TEXT,
+			timestamp TEXT
+		);
+
+		CREATE TABLE attachments (
+			id INTEGER PRIMARY KEY,
+			message_id INTEGER,
+			mime_type TEXT,
+			file_name TEXT,
+			is_sticker INTEGER DEFAULT 0
+		);
+
+		CREATE TABLE reactions (
+			id INTEGER PRIMARY KEY,
+			message_id INTEGER,
+			original_message_guid TEXT,
+			reaction_type INTEGER,
+			sender_id INTEGER
 		);
 	`)
 	if err != nil {
@@ -52,54 +76,45 @@ func createTestDB(t *testing.T) (string, int64) {
 	}
 
 	// Insert test data
-	// Insert handle for Bob
-	_, err = db.Exec(`INSERT INTO handle (ROWID, id) VALUES (1, '+15551234567')`)
+	// Contacts
+	_, err = db.Exec(`
+		INSERT INTO contacts (id, name, is_me) VALUES (1, 'Me', 1);
+		INSERT INTO contacts (id, name) VALUES (2, 'Bob');
+	`)
 	if err != nil {
-		t.Fatalf("failed to insert handle: %v", err)
+		t.Fatalf("failed to insert contacts: %v", err)
 	}
 
-	// Insert contact for Bob
-	_, err = db.Exec(`INSERT INTO contact (phone_number, display_name) VALUES ('+15551234567', 'Bob')`)
+	// Chat
+	_, err = db.Exec(`INSERT INTO chats (id, chat_name) VALUES (1, 'Chat with Bob')`)
 	if err != nil {
-		t.Fatalf("failed to insert contact: %v", err)
+		t.Fatalf("failed to insert chat: %v", err)
 	}
 
-	// Insert messages
-	// iMessage date format: nanoseconds since 2001-01-01
-	// We'll use simplified timestamps for testing
-	baseTime := time.Date(2025, 1, 10, 10, 0, 0, 0, time.UTC)
-	ref := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
-	baseNano := int64(baseTime.Sub(ref).Nanoseconds())
-
-	// Message 1: from me
+	// Conversation
 	result, err := db.Exec(`
-		INSERT INTO message (guid, text, handle_id, date, is_from_me)
-		VALUES ('msg-1', 'Hello Bob!', NULL, ?, 1)
-	`, baseNano)
+		INSERT INTO conversations (id, chat_id, start_time, end_time)
+		VALUES (1, 1, '2025-01-10T10:00:00Z', '2025-01-10T10:02:00Z')
+	`)
 	if err != nil {
-		t.Fatalf("failed to insert message 1: %v", err)
+		t.Fatalf("failed to insert conversation: %v", err)
 	}
-	msg1ID, _ := result.LastInsertId()
+	convID, _ := result.LastInsertId()
 
-	// Message 2: from Bob
+	// Messages
 	_, err = db.Exec(`
-		INSERT INTO message (guid, text, handle_id, date, is_from_me)
-		VALUES ('msg-2', 'Hi Alice!', 1, ?, 0)
-	`, baseNano+60*1e9) // 1 minute later
+		INSERT INTO messages (id, guid, conversation_id, chat_id, sender_id, content, timestamp)
+		VALUES (1, 'msg-1', 1, 1, 1, 'Hello Bob!', '2025-01-10T10:00:00Z');
+		INSERT INTO messages (id, guid, conversation_id, chat_id, sender_id, content, timestamp)
+		VALUES (2, 'msg-2', 1, 1, 2, 'Hi Alice!', '2025-01-10T10:01:00Z');
+		INSERT INTO messages (id, guid, conversation_id, chat_id, sender_id, content, timestamp)
+		VALUES (3, 'msg-3', 1, 1, 1, 'How are you?', '2025-01-10T10:02:00Z');
+	`)
 	if err != nil {
-		t.Fatalf("failed to insert message 2: %v", err)
+		t.Fatalf("failed to insert messages: %v", err)
 	}
 
-	// Message 3: from me
-	_, err = db.Exec(`
-		INSERT INTO message (guid, text, handle_id, date, is_from_me)
-		VALUES ('msg-3', 'How are you?', NULL, ?, 1)
-	`, baseNano+120*1e9) // 2 minutes later
-	if err != nil {
-		t.Fatalf("failed to insert message 3: %v", err)
-	}
-
-	return dbPath, msg1ID
+	return dbPath, convID
 }
 
 func TestLoadConversation(t *testing.T) {
@@ -118,8 +133,18 @@ func TestLoadConversation(t *testing.T) {
 		t.Errorf("Expected conversation ID %d, got %d", conversationID, conv.ID)
 	}
 
-	if len(conv.Messages) == 0 {
-		t.Error("Expected at least one message")
+	if len(conv.Messages) != 3 {
+		t.Errorf("Expected 3 messages, got %d", len(conv.Messages))
+	}
+
+	// Check first message
+	if conv.Messages[0].Text != "Hello Bob!" {
+		t.Errorf("Expected first message 'Hello Bob!', got %s", conv.Messages[0].Text)
+	}
+
+	// Check sender name (from contacts table)
+	if conv.Messages[0].SenderName != "Me" {
+		t.Errorf("Expected sender 'Me', got %s", conv.Messages[0].SenderName)
 	}
 }
 
@@ -209,8 +234,8 @@ func TestEncodeConversationToFile(t *testing.T) {
 		t.Errorf("Expected FilePath %s, got %s", outputPath, result.FilePath)
 	}
 
-	if result.MessageCount == 0 {
-		t.Error("Expected MessageCount > 0")
+	if result.MessageCount != 3 {
+		t.Errorf("Expected MessageCount 3, got %d", result.MessageCount)
 	}
 
 	// Check file exists
@@ -227,6 +252,11 @@ func TestEncodeConversationToFile(t *testing.T) {
 	contentStr := string(content)
 	if !strings.Contains(contentStr, "Hello Bob!") {
 		t.Errorf("Expected content to contain 'Hello Bob!', got: %s", contentStr)
+	}
+
+	// Verify sender names are resolved
+	if !strings.Contains(contentStr, "Me:") {
+		t.Errorf("Expected content to contain 'Me:', got: %s", contentStr)
 	}
 }
 

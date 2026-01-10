@@ -1,8 +1,0 @@
-alembic
-pydantic
-pydantic-settings
-python-dateutil
-redis
-sqlalchemy
-tzlocal
-
