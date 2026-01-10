@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tylerchilds/eve/internal/db"
+	"github.com/tylerchilds/eve/internal/encoding"
 	"github.com/tylerchilds/eve/internal/resources"
 )
 
@@ -212,17 +213,64 @@ then optionally runs high-throughput conversation analysis + embeddings.`,
 		Short: "Encoding operations",
 	}
 
-	// eve encode conversation (placeholder)
+	// eve encode conversation
+	var encodeStdout bool
+	var encodeOutput string
+	var encodeDBPath string
 	encodeConvoCmd := &cobra.Command{
-		Use:   "conversation [conversation_id]",
+		Use:   "conversation --conversation-id <id>",
 		Short: "Encode a conversation into LLM-ready text",
-		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf(`{"status": "not_implemented", "conversation_id": %q}`, args[0])
-			fmt.Println()
+			conversationIDStr, _ := cmd.Flags().GetString("conversation-id")
+			if conversationIDStr == "" {
+				return fmt.Errorf("--conversation-id flag is required")
+			}
+
+			var conversationID int64
+			if _, err := fmt.Sscanf(conversationIDStr, "%d", &conversationID); err != nil {
+				return fmt.Errorf("invalid conversation ID: %s", conversationIDStr)
+			}
+
+			// Determine database path
+			dbPath := encodeDBPath
+			if dbPath == "" {
+				home, _ := os.UserHomeDir()
+				dbPath = fmt.Sprintf("%s/.config/eve/eve.db", home)
+			}
+
+			var result encoding.EncodeResult
+
+			if encodeStdout {
+				// Print transcript to stdout
+				result = encoding.EncodeConversationToString(dbPath, conversationID)
+				if !result.Success {
+					return fmt.Errorf(result.Error)
+				}
+				fmt.Println(result.EncodedText)
+			} else {
+				// Write to file
+				outputPath := encodeOutput
+				if outputPath == "" {
+					outputPath = encoding.GetDefaultOutputPath(conversationID)
+				}
+
+				result = encoding.EncodeConversationToFile(dbPath, conversationID, outputPath)
+				if !result.Success {
+					return fmt.Errorf(result.Error)
+				}
+
+				// Output metadata as JSON (no message text)
+				out, _ := json.MarshalIndent(result, "", "  ")
+				fmt.Println(string(out))
+			}
+
 			return nil
 		},
 	}
+	encodeConvoCmd.Flags().String("conversation-id", "", "Conversation ID to encode (required)")
+	encodeConvoCmd.Flags().BoolVar(&encodeStdout, "stdout", false, "Print transcript to stdout instead of writing to file")
+	encodeConvoCmd.Flags().StringVar(&encodeOutput, "output", "", "Output file path (default: ~/.config/eve/tmp/conversation_<id>.txt)")
+	encodeConvoCmd.Flags().StringVar(&encodeDBPath, "db", "", "Database path (default: ~/.config/eve/eve.db)")
 	encodeCmd.AddCommand(encodeConvoCmd)
 
 	rootCmd.AddCommand(versionCmd)
