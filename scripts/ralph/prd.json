@@ -105,7 +105,7 @@
         "Unit tests build a temp eve.db with a tiny conversation and verify file output + metadata"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "files": ["cmd/eve/main.go"],
       "notes": "This should become the canonical encoding path (TS encoding becomes reference only)."
     },

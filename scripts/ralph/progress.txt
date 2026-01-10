@@ -95,3 +95,32 @@ Phase: go-cli-context-engine
   - WITH (CTE) query support
 - Key learning: SQLite driver requires CGO, which is enabled by default in Go
 - Key learning: db.Query() in database/sql doesn't support mutation queries (returns error), but we allow them through when --write is set since the safety check is the main gate
+
+### EVGO-022: CLI primitive: eve encode conversation (2026-01-10)
+- Implemented `internal/encoding` package with conversation encoding primitives
+- Added `LoadConversation` function that loads messages from SQLite database using iMessage schema
+- Message encoding format: "SenderName: message text [Attachment] [reactions]"
+- Supports optional timestamp prefix: "[3:45pm] SenderName: message text"
+- Attachment encoding: "[Image]" for images, "[Attachment: filename]" for other files
+- Reaction encoding: "[❤️, 👍(2)]" with counts for multiple reactions
+- EncodeOptions control what's included: sender, attachments, reactions, start date, send time
+- Added `EncodeConversationToFile` that writes transcript to file and returns JSON metadata
+- Added `EncodeConversationToString` that returns transcript as string
+- Updated `cmd/eve/main.go` to add `eve encode conversation` command
+- Command flags:
+  - `--conversation-id <id>` (required): conversation ID to encode
+  - `--stdout`: print transcript to stdout instead of file
+  - `--output <path>`: custom output file path
+  - `--db <path>`: custom database path (default: ~/.config/eve/eve.db)
+- Default behavior: writes to file, outputs JSON metadata { success, file_path, token_count, message_count }
+- Privacy-focused: no message text in default JSON output (only with --stdout)
+- Token counting: rough estimate using length / 4
+- Unit tests cover:
+  - LoadConversation with synthetic test database (creates handle, contact, message tables)
+  - EncodeMessage with various options (sender, text, attachments, reactions, timestamps)
+  - EncodeConversation with multiple messages (sorted by timestamp)
+  - EncodeConversationToFile writes file and returns metadata
+  - EncodeConversationToString returns encoded text
+  - reactionTypeToEmoji mapping for iMessage reaction types (2000-2005)
+- Key learning: iMessage dates are stored as nanoseconds since 2001-01-01, requires conversion
+- This becomes the canonical encoding implementation (TypeScript version is reference only)
