@@ -117,7 +117,7 @@ func getEntityText(ctx context.Context, warehouseDB *sql.DB, entityType string, 
 		// Encode conversation to text
 		opts := encoding.DefaultEncodeOptions()
 		opts.IncludeSendTime = true
-		text := encoding.EncodeConversation(*convo, opts)
+		text := encoding.EncodeConversation(convo, opts)
 		return text, nil
 
 	case "message":

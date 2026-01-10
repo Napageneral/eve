@@ -11,7 +11,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func createTestDB(t *testing.T) (string, int64) {
+func createTestDB(t *testing.T) (string, int) {
 	t.Helper()
 
 	tempDir := t.TempDir()
@@ -114,7 +114,7 @@ func createTestDB(t *testing.T) (string, int64) {
 		t.Fatalf("failed to insert messages: %v", err)
 	}
 
-	return dbPath, convID
+	return dbPath, int(convID)
 }
 
 func TestLoadConversation(t *testing.T) {

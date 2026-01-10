@@ -545,7 +545,7 @@ func loadConversationWithMessages(db *sql.DB, convID, chatID int64) (*encoding.C
 }
 
 // loadAttachmentsForMessage loads attachments for a message
-func loadAttachmentsForMessage(db *sql.DB, messageID int64) ([]encoding.Attachment, error) {
+func loadAttachmentsForMessage(db *sql.DB, messageID int) ([]encoding.Attachment, error) {
 	query := `
 		SELECT id, mime_type, file_name, is_sticker
 		FROM attachments

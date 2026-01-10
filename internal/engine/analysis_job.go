@@ -104,7 +104,7 @@ func (h *AnalysisJobHandler) handleJob(ctx context.Context, payloadJSON string) 
 	// Encode conversation
 	opts := encoding.DefaultEncodeOptions()
 	t1 := time.Now()
-	encodedText := encoding.EncodeConversation(*conversation, opts)
+	encodedText := encoding.EncodeConversation(conversation, opts)
 	encodeDur = time.Since(t1)
 
 	// Build prompt (full quality: all messages, no truncation, no output caps)

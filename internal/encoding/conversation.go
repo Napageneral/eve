@@ -14,19 +14,23 @@ import (
 
 // Message represents a conversation message
 type Message struct {
-	ID          int64
-	GUID        string
-	Timestamp   time.Time
-	SenderName  string
-	Text        string
-	IsFromMe    bool
-	Attachments []Attachment
-	Reactions   []Reaction
+	ID             int
+	GUID           string
+	Timestamp      time.Time
+	SenderID       *int
+	SenderName     string
+	Content        string // message text content
+	Text           string // alias for Content (deprecated, use Content)
+	IsFromMe       bool
+	Attachments    []Attachment
+	Reactions      []Reaction
+	ConversationID int
+	ChatID         int
 }
 
 // Attachment represents a message attachment
 type Attachment struct {
-	ID        int64
+	ID        int
 	MimeType  string
 	FileName  string
 	IsSticker bool
@@ -35,14 +39,15 @@ type Attachment struct {
 // Reaction represents a reaction to a message
 type Reaction struct {
 	ReactionType int
+	SenderID     int
 	SenderName   string
 	IsFromMe     bool
 }
 
 // Conversation represents a conversation with messages
 type Conversation struct {
-	ID        int64
-	ChatID    int64
+	ID        int
+	ChatID    int
 	StartTime time.Time
 	EndTime   time.Time
 	Messages  []Message
@@ -79,7 +84,7 @@ type EncodeResult struct {
 }
 
 // LoadConversation loads a conversation from eve.db by conversation ID
-func LoadConversation(dbPath string, conversationID int64) (*Conversation, error) {
+func LoadConversation(dbPath string, conversationID int) (*Conversation, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -173,7 +178,7 @@ func LoadConversation(dbPath string, conversationID int64) (*Conversation, error
 }
 
 // loadAttachments loads attachments for a message from eve.db
-func loadAttachments(db *sql.DB, messageID int64) []Attachment {
+func loadAttachments(db *sql.DB, messageID int) []Attachment {
 	query := `
 		SELECT id, COALESCE(mime_type, ''), COALESCE(file_name, ''), COALESCE(is_sticker, 0)
 		FROM attachments
@@ -246,9 +251,13 @@ func EncodeMessage(msg Message, opts EncodeOptions) string {
 		parts = append(parts, fmt.Sprintf("%s:", msg.SenderName))
 	}
 
-	// Add message text
-	if msg.Text != "" {
-		parts = append(parts, msg.Text)
+	// Add message text (prefer Content, fall back to Text for compatibility)
+	text := msg.Content
+	if text == "" {
+		text = msg.Text
+	}
+	if text != "" {
+		parts = append(parts, text)
 	}
 
 	// Add attachments
@@ -322,7 +331,7 @@ func EncodeConversation(conv *Conversation, opts EncodeOptions) string {
 }
 
 // EncodeConversationToFile encodes a conversation and writes it to a file
-func EncodeConversationToFile(dbPath string, conversationID int64, outputPath string) EncodeResult {
+func EncodeConversationToFile(dbPath string, conversationID int, outputPath string) EncodeResult {
 	// Load conversation
 	conv, err := LoadConversation(dbPath, conversationID)
 	if err != nil {
@@ -356,7 +365,7 @@ func EncodeConversationToFile(dbPath string, conversationID int64, outputPath st
 }
 
 // EncodeConversationToString encodes a conversation and returns it as a string
-func EncodeConversationToString(dbPath string, conversationID int64) EncodeResult {
+func EncodeConversationToString(dbPath string, conversationID int) EncodeResult {
 	// Load conversation
 	conv, err := LoadConversation(dbPath, conversationID)
 	if err != nil {
@@ -400,7 +409,7 @@ func reactionTypeToEmoji(reactionType int) string {
 }
 
 // GetDefaultOutputPath returns a default output path for encoded conversation
-func GetDefaultOutputPath(conversationID int64) string {
+func GetDefaultOutputPath(conversationID int) string {
 	home, _ := os.UserHomeDir()
 	tmpDir := filepath.Join(home, ".config", "eve", "tmp")
 	os.MkdirAll(tmpDir, 0755)
