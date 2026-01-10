@@ -1,17 +1,29 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help tree py-check py-install py-test ts-check ts-install test test-ts test-py
+.PHONY: help tree go-build go-test py-check py-install py-test ts-check ts-install test test-ts test-py test-go
 
 help:
-	@echo "Eve (WIP)"
+	@echo "Eve - CLI-first personal communications database"
 	@echo ""
 	@echo "Targets:"
+	@echo "  make go-build    Build Go binary (bin/eve)"
+	@echo "  make go-test     Run Go tests"
 	@echo "  make tree        Show repo tree (high-level)"
 	@echo "  make py-check    Sanity-check Python backend import graph"
 	@echo "  make ts-check    Sanity-check TypeScript workspace (tsc)"
 	@echo "  make ts-install  Install Bun/TS deps (ts/)"
 	@echo "  make py-install  Create venv + install minimal Python deps for CLI/ETL"
-	@echo "  make test        Run all Eve tests (TS + Python)"
+	@echo "  make test        Run all Eve tests (Go + TS + Python)"
+
+# --- Go ---
+
+go-build:
+	@go build -o bin/eve ./cmd/eve
+
+go-test:
+	@go test ./...
+
+test-go: go-test
 
 # --- utils ---
 
@@ -42,7 +54,7 @@ ts-install:
 
 # --- Tests ---
 
-test: test-ts test-py
+test: test-go test-ts test-py
 
 test-ts:
 	@command -v bun >/dev/null 2>&1 || (echo "bun is required to run tests" && exit 1)

@@ -1,0 +1,173 @@
+{
+  "project": "eve",
+  "branchName": "ralph/go-cli-context-engine",
+  "phase": "go-cli-context-engine",
+  "description": "Port the TypeScript 'intelligence layer' runtime (context pack compilation, retrieval adapters, encoding primitives, DB query helpers) into the Go CLI so Eve is maximally portable as a single binary + a skill folder that ships editable prompt resources.",
+  "documentation": {
+    "ts/eve/context-engine/": "Reference-only TS context engine (do not keep as runtime dependency)",
+    "ts/eve/prompts/": "Prompt source material to be consolidated into resources/",
+    "ts/eve/context-packs/": "Pack source material to be consolidated into resources/",
+    "docs/skills/eve-db.md": "Agent skill doc (update once Go CLI primitives exist)"
+  },
+  "verification": {
+    "command": "./scripts/ralph/verify.sh",
+    "notes": "Fast + deterministic. No real user data. No real Gemini calls. Prefer temp SQLite DB fixtures."
+  },
+  "userStories": [
+    {
+      "id": "EVGO-000",
+      "title": "Bootstrap: Go module + minimal eve CLI skeleton in this repo",
+      "description": "Introduce Go module + cobra CLI skeleton in-place (no new repo, no eve-go folder). This establishes the foundation for porting TS runtime into Go.",
+      "acceptanceCriteria": [
+        "Add go.mod/go.sum for module github.com/tylerchilds/eve (or the existing canonical module name if different)",
+        "Add cmd/eve/main.go with cobra root command and subcommand eve version (JSON stdout)",
+        "Add Makefile targets go-test/go-build (keep existing TS/Python targets untouched for now)",
+        "Add ./scripts/ralph/verify.sh to run go test ./... (TS tests remain opt-in)",
+        "go test ./... passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "files": ["go.mod", "cmd/eve/main.go", "Makefile", "scripts/ralph/verify.sh"],
+      "notes": "This repo currently has Python/TS. We are evolving it in-place into Go-first; deletions come later."
+    },
+    {
+      "id": "EVGO-018",
+      "title": "Resources: consolidate prompts + packs into a skill-shippable resources/ folder",
+      "description": "Create resources/prompts and resources/packs and copy existing ts/eve prompts/packs there. Keep prompts/packs as editable data for users/agents.",
+      "acceptanceCriteria": [
+        "Create resources/prompts/** and resources/packs/**",
+        "Copy all *.prompt.md from ts/eve/prompts into resources/prompts preserving structure",
+        "Copy all *.pack.yaml from ts/eve/context-packs into resources/packs preserving structure",
+        "No runtime dependency on ts/ paths for core compute (resources become canonical)",
+        "Add a short README in resources/ explaining override strategy for skills"
+      ],
+      "priority": 2,
+      "passes": false,
+      "files": ["resources/**"],
+      "notes": "These files will later be embedded into the Go binary, but also overrideable from disk."
+    },
+    {
+      "id": "EVGO-019",
+      "title": "Go resources loader: embed defaults + allow --resources-dir override",
+      "description": "Implement internal/resources that can load prompt + pack files from embedded defaults or an override directory (skill folder).",
+      "acceptanceCriteria": [
+        "Add internal/resources with embed.FS for resources/prompts and resources/packs",
+        "Support override directory via flag --resources-dir and env EVE_RESOURCES_DIR",
+        "Prompt parsing: YAML frontmatter delimited by --- and markdown body; return structured Prompt{ID, Frontmatter, Body}",
+        "Pack parsing: YAML into typed struct Pack{ID, Slices...}",
+        "Unit tests cover loading convo-all-v1 prompt and analyses-all-comprehensive pack from embedded FS"
+      ],
+      "priority": 3,
+      "passes": false,
+      "files": ["internal/resources/**", "cmd/eve/main.go"],
+      "notes": "This is the portability core: binary works standalone; skills can ship editable resources."
+    },
+    {
+      "id": "EVGO-020",
+      "title": "CLI primitives: eve prompt|pack list/show (JSON)",
+      "description": "Expose prompt and pack discovery via Go CLI so agents can inspect what exists without reading repo files.",
+      "acceptanceCriteria": [
+        "Add eve prompt list and eve prompt show <id>",
+        "Add eve pack list and eve pack show <id>",
+        "JSON-only stdout with stable fields (id/name/category/tags/default_pack/etc.)",
+        "Supports --resources-dir override",
+        "Unit tests validate command output shape (no full snapshot needed)"
+      ],
+      "priority": 4,
+      "passes": false,
+      "files": ["cmd/eve/main.go", "internal/resources/**"],
+      "notes": "This replaces the TS context-engine CLI for discovery."
+    },
+    {
+      "id": "EVGO-021",
+      "title": "CLI primitive: eve db query (serverless raw SQL, SELECT-only default)",
+      "description": "Add eve db query --sql to execute raw SQL against eve.db (warehouse) with safety gates and stable JSON results.",
+      "acceptanceCriteria": [
+        "Add eve db query --sql <SQL>",
+        "Default allow-list: SELECT/WITH only (block DELETE/UPDATE/INSERT/ALTER unless --write)",
+        "Support --db warehouse|queue|path:/abs/file.db (warehouse default)",
+        "JSON output: { ok, row_count, rows } (pretty-print optional)",
+        "Unit tests cover: SELECT allowed, DELETE blocked, DELETE allowed with --write"
+      ],
+      "priority": 5,
+      "passes": false,
+      "files": ["cmd/eve/main.go", "internal/db/**"],
+      "notes": "Raw SQL only; no ORMs. This becomes the #1 agent access primitive."
+    },
+    {
+      "id": "EVGO-022",
+      "title": "CLI primitive: eve encode conversation (file by default; --stdout to print)",
+      "description": "Expose canonical transcript encoding as a Go CLI primitive so agents can build LLM inputs without writing code. Default avoids printing message text.",
+      "acceptanceCriteria": [
+        "Add eve encode conversation --conversation-id <id>",
+        "Default writes transcript to a file and outputs JSON metadata (no message text)",
+        "--stdout prints transcript text (explicit)",
+        "Unit tests build a temp eve.db with a tiny conversation and verify file output + metadata"
+      ],
+      "priority": 6,
+      "passes": false,
+      "files": ["cmd/eve/main.go"],
+      "notes": "This should become the canonical encoding path (TS encoding becomes reference only)."
+    },
+    {
+      "id": "EVGO-023",
+      "title": "Go context engine v1: compile packs into hidden parts + ledger (static_snippet only)",
+      "description": "Implement a minimal Go pack compiler that can compile a pack into hidden parts, token ledger, and visible prompt. Start with static_snippet adapter only.",
+      "acceptanceCriteria": [
+        "Add internal/contextengine with ExecuteRequest/ExecuteResult types",
+        "Implement variable substitution in pack slice params ({{var}})",
+        "Implement static_snippet adapter in Go",
+        "Add eve context compile --prompt <id> ... with JSON output",
+        "Unit test compiles convo-all-context pack using conversation_text var and returns a hidden part"
+      ],
+      "priority": 7,
+      "passes": false,
+      "files": ["internal/contextengine/**", "cmd/eve/main.go"],
+      "notes": "Budget fitting can be v1: error if over budget."
+    },
+    {
+      "id": "EVGO-024",
+      "title": "Go retrieval adapter: convos_context_data (DB-backed)",
+      "description": "Port TS convos_context_data retrieval to Go using raw SQL and Go encoding.",
+      "acceptanceCriteria": [
+        "Implement convos_context_data adapter in Go (chat_ids/contact_ids, time presets, order timeAsc/timeDesc, token_max)",
+        "Uses Go encoding to output LLM-friendly conversation logs",
+        "Unit tests use synthetic eve.db and verify time filtering + token_max stops"
+      ],
+      "priority": 8,
+      "passes": false,
+      "files": ["internal/contextengine/**", "internal/db/**"],
+      "notes": "No vector search required for v1; similarity ordering can be TODO."
+    },
+    {
+      "id": "EVGO-025",
+      "title": "Go retrieval adapter: analyses_context_data (DB-backed facets context)",
+      "description": "Port TS analyses_context_data retrieval to Go to power overall-v1 style prompts (summaries + facets).",
+      "acceptanceCriteria": [
+        "Implement analyses_context_data adapter in Go (include filters, time presets, ordering, token_max)",
+        "Reads from conversations summary + facets tables (topics/entities/emotions/humor)",
+        "Unit tests use synthetic eve.db and validate included sections"
+      ],
+      "priority": 9,
+      "passes": false,
+      "files": ["internal/contextengine/**", "internal/db/**"],
+      "notes": "Keep output as text (LLM-ready), returned as hidden part."
+    },
+    {
+      "id": "EVGO-026",
+      "title": "Resources UX: eve resources export",
+      "description": "Allow users/agents to export embedded resources to disk for local hacking and skill packaging.",
+      "acceptanceCriteria": [
+        "Add eve resources export --dir <path>",
+        "Exports embedded resources/prompts + resources/packs preserving structure",
+        "JSON-only stdout with counts + target dir",
+        "Unit test exports to temp dir and checks for a known file"
+      ],
+      "priority": 10,
+      "passes": false,
+      "files": ["cmd/eve/main.go", "internal/resources/**"],
+      "notes": "This is how skills ship resources and users customize them."
+    }
+  ]
+}
+

@@ -1,0 +1,27 @@
+# Ralph Progress Log for Eve (Nexus in-place)
+Started: 2026-01-10
+Phase: go-cli-context-engine
+
+## Codebase Patterns (keep updated)
+
+### Output + privacy defaults
+- **Stdout contract**: JSON-only by default for all CLI commands.
+- **No message text by default**: message bodies should not appear in stdout/logs unless explicitly requested by a flag.
+
+### Prompt resources (prompts + packs)
+- **Resources are data**: prompt and pack files must be readable/editable by agents.
+- **Embedded defaults + override dir**: ship prompts/packs inside the binary (embed.FS) but allow loading from a user/skill folder on disk.
+- **Canonical location**: resources/ (not ts/).
+
+### Data + queries
+- **Raw SQL only**: do not introduce ORMs for queries. Use `database/sql` with explicit SQL.
+- **Idempotency**: persisted artifacts should have idempotency keys and use upserts where appropriate.
+- **Separate DBs**: eve.db (warehouse) and eve-queue.db (durable queue) remain the model.
+
+### Testing
+- **Ralph harness**: `./scripts/ralph/verify.sh`
+- **NO real Gemini calls in unit tests**: use fakes / httptest.
+- **Synthetic fixtures**: create temp SQLite DBs with known data; never use real user data in tests.
+
+## Notes / Learnings (append after each story)
+
