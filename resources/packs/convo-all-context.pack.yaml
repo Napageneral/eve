@@ -1,0 +1,22 @@
+id: convo-all-context
+name: Conversation Analysis Context
+version: 1.0.0
+category: analysis
+tags: [conversation, celery]
+
+description: |
+  Context pack for full conversation analysis (ConvoAll).
+  Provides encoded conversation data for LLM analysis.
+
+flexibility: low
+total_estimated_tokens: 50000
+
+slices:
+  - name: CONVERSATION_DATA
+    retrieval: static_snippet
+    params:
+      text: "{{conversation_text}}"
+    estimated_tokens: 50000
+    encoding_explainer: "Encoded conversation messages with participant names, attachments, and reactions."
+    why_include: "Provides the conversation text that needs to be analyzed for entities, topics, emotions, and humor."
+

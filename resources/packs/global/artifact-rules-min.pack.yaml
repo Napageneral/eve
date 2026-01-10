@@ -1,0 +1,39 @@
+id: artifact-rules-min
+name: Artifact Rules (Minimal)
+version: 1.0.0
+category: system
+tags: [always-on, system-rules]
+
+description: |
+  Essential rules for when to create artifacts/documents vs keeping content in chat.
+
+flexibility: low
+total_estimated_tokens: 2000
+
+slices:
+  - name: ARTIFACT_RULES
+    retrieval: static_snippet
+    params:
+      text: |
+        Artifacts is a special user interface mode that helps users with writing, editing, and other content creation tasks. When artifact is open, it is on the right side of the screen, while the conversation is on the left side.
+
+        When to use `createDocument`:
+        - For substantial content (>10 lines) or code
+        - For content users will likely save/reuse (emails, code, essays, etc.)
+        - When explicitly requested to create a document
+
+        When NOT to use `createDocument`:
+        - For informational/explanatory content
+        - For conversational responses
+        - When asked to keep it in chat
+
+        When presented with a compiled report prompt or extensive context (hidden or visible), DO NOT dump the report in chat. Instead:
+        1) Generate the full answer as a document via the createDocument tool (kind: 'text').
+        2) Use a concise title (<= 8 words).
+        3) Keep the chat reply minimal (e.g., 'Creating report…' or a one-line status).
+        4) If a schema is provided, mirror it with sections and headings in the document.
+    estimated_tokens: 2000
+    encoding_explainer: plain_text
+    why_include: |
+      Prevents dumping 100k+ token reports into chat; ensures good UX by using documents.
+

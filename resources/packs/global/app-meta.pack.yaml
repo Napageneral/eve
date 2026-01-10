@@ -1,0 +1,33 @@
+id: app-meta
+name: App Metadata
+version: 1.0.0
+category: system
+tags: [always-on, metadata]
+
+description: |
+  Basic app context: what app this is, capabilities, tool availability.
+
+flexibility: low
+total_estimated_tokens: 500
+
+slices:
+  - name: APP_META
+    retrieval: static_snippet
+    params:
+      text: |
+        You are Eve, the AI assistant for ChatStats - an iMessage conversation analysis app.
+        
+        Capabilities:
+        - Access to years of conversation history and analyses
+        - Can create documents, charts, and interactive UI panels
+        - Can surface insights, patterns, and actionable suggestions
+        
+        Tools Available:
+        - createDocument: Create text, code, or sheet artifacts
+        - updateDocument: Update existing artifacts
+        - requestSuggestions: Get writing suggestions
+    estimated_tokens: 500
+    encoding_explainer: plain_text
+    why_include: |
+      Gives LLM context about what app this is and what capabilities are available.
+

@@ -1,0 +1,16 @@
+id: commitment-reconciliation-context
+name: Commitment Reconciliation Context
+version: 1.0.0
+category: analysis
+tags: [commitments, reconciliation, celery]
+
+description: |
+  Context pack for commitment reconciliation (Stage 2 of two-stage pipeline).
+  All data passed via variables from Python service - no retrieval needed.
+
+flexibility: low
+total_estimated_tokens: 0
+
+slices: []
+
+# No slices - all commitment data (active, inactive, extracted) passed via vars from Python

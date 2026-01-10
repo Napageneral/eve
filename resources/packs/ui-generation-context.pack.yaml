@@ -1,0 +1,17 @@
+id: ui-generation-context
+name: UI Generation Context
+version: 1.0.0
+category: ui
+tags: [ui, generation, suggestions]
+
+description: |
+  Context for UI panel generation. Includes suggestions and optional analysis summary
+  passed via variables.
+
+flexibility: high
+total_estimated_tokens: 0
+
+slices: []
+
+# No slices - data passed via vars
+

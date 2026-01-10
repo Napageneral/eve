@@ -1,0 +1,33 @@
+id: analyses-all-comprehensive
+name: "Analyses - All Time (Comprehensive)"
+version: 1.0.0
+category: analysis
+tags: [comprehensive, all-time, facets]
+
+description: |
+  All-time comprehensive analysis with all facets for Overall Analysis prompt.
+
+flexibility: high
+total_estimated_tokens: 210000
+
+slices:
+  - name: ANALYSES_ALL
+    retrieval: analyses_context_data
+    params:
+      chat_ids: ["{{source_chat}}"]
+      time: { preset: all }
+      order: timeDesc
+      token_max: 1000000000
+      include: [summary, topics, entities, emotions, humor]
+    estimated_tokens: 200000
+    why_include: |
+      Complete conversation history provides comprehensive view for overall analysis.
+
+  - name: EXISTING_ARTIFACT
+    retrieval: artifacts_context_data
+    params:
+      document_names: ["{{chat_title}} : Overall Analysis"]
+    estimated_tokens: 10000
+    why_include: |
+      Include existing artifact to allow LLM to update/improve it.
+
