@@ -7,6 +7,7 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+	"github.com/tylerchilds/eve/internal/db"
 	"github.com/tylerchilds/eve/internal/resources"
 )
 
@@ -64,20 +65,32 @@ then optionally runs high-throughput conversation analysis + embeddings.`,
 		Short: "Database operations",
 	}
 
-	// eve db query (placeholder)
+	// eve db query
 	var sqlQuery string
-	var queryLimit int
+	var dbSpec string
+	var allowWrite bool
 	dbQueryCmd := &cobra.Command{
 		Use:   "query",
-		Short: "Execute read-only SQL against eve.db",
+		Short: "Execute SQL against eve.db (read-only by default)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf(`{"status": "not_implemented", "sql": %q}`, sqlQuery)
-			fmt.Println()
+			if sqlQuery == "" {
+				return fmt.Errorf("--sql flag is required")
+			}
+
+			result := db.Execute(db.QueryOptions{
+				SQL:        sqlQuery,
+				DBSpec:     dbSpec,
+				AllowWrite: allowWrite,
+			})
+
+			out, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(out))
 			return nil
 		},
 	}
-	dbQueryCmd.Flags().StringVar(&sqlQuery, "sql", "", "SQL query to execute")
-	dbQueryCmd.Flags().IntVar(&queryLimit, "limit", 100, "Max rows to return")
+	dbQueryCmd.Flags().StringVar(&sqlQuery, "sql", "", "SQL query to execute (required)")
+	dbQueryCmd.Flags().StringVar(&dbSpec, "db", "warehouse", "Database to query: warehouse, queue, or path:/abs/file.db")
+	dbQueryCmd.Flags().BoolVar(&allowWrite, "write", false, "Allow write operations (INSERT/UPDATE/DELETE/ALTER)")
 	dbCmd.AddCommand(dbQueryCmd)
 
 	// eve compute (subcommand group)
