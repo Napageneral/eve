@@ -1,0 +1,174 @@
+{
+  "branchName": "ralph/cli-consolidation",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "eve chats - List chats with names",
+      "acceptanceCriteria": [
+        "eve chats lists all chats sorted by last_message_date DESC",
+        "eve chats --limit N limits results",
+        "eve chats --search 'name' filters by chat name",
+        "eve chats --json outputs JSON",
+        "Output includes: id, name, last_message_date, total_messages, is_group",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "eve contacts - Search and list contacts",
+      "acceptanceCriteria": [
+        "eve contacts lists all contacts",
+        "eve contacts --search 'name' fuzzy matches on name",
+        "eve contacts --top N shows contacts with most messages",
+        "eve contacts --json outputs JSON",
+        "Output includes: id, name, message_count, phone/email identifiers",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "eve messages - Query messages with filters",
+      "acceptanceCriteria": [
+        "eve messages --chat-id N returns messages from chat",
+        "eve messages --contact 'name' resolves contact and returns messages",
+        "eve messages --since DATE filters by start date",
+        "eve messages --until DATE filters by end date",
+        "eve messages --search 'text' searches message content",
+        "eve messages --limit N limits results",
+        "eve messages --json outputs JSON",
+        "Supports ISO8601 and YYYY-MM-DD date formats",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "eve history - imsg-compatible message history",
+      "acceptanceCriteria": [
+        "eve history --chat-id N --limit M returns recent messages",
+        "eve history --chat-id N --start DATE --end DATE filters by date range",
+        "eve history --chat-id N --attachments includes attachment metadata",
+        "eve history --json outputs JSON in imsg-compatible format",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "eve send - Send messages via AppleScript",
+      "acceptanceCriteria": [
+        "eve send --to '+1234567890' --text 'msg' sends to phone number",
+        "eve send --to 'email@example.com' --text 'msg' sends to email",
+        "eve send --chat-id N --text 'msg' sends to existing chat",
+        "eve send --contact 'name' --text 'msg' resolves contact and sends",
+        "eve send --to ... --file ~/photo.jpg sends with attachment",
+        "eve send --json outputs JSON result",
+        "Uses osascript to execute AppleScript",
+        "go test passes (mock AppleScript execution)",
+        "go build succeeds"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "eve watch - Stream incoming messages",
+      "acceptanceCriteria": [
+        "eve watch streams new messages to stdout",
+        "eve watch --chat-id N filters to specific chat",
+        "eve watch --since-rowid N starts from rowid",
+        "eve watch --json outputs JSON per message",
+        "Uses fsnotify or polling to detect chat.db changes",
+        "Outputs: chat_id, sender, text, timestamp, is_from_me",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "eve search - Semantic search using embeddings",
+      "acceptanceCriteria": [
+        "eve search 'query' returns relevant conversations",
+        "eve search 'query' --chat-id N limits to chat",
+        "eve search 'query' --limit N limits results",
+        "eve search --json outputs JSON",
+        "Embeds query using Gemini API",
+        "Computes cosine similarity against stored embeddings",
+        "Returns ranked results with conversation snippets",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "eve attachments - List and export attachments",
+      "acceptanceCriteria": [
+        "eve attachments --chat-id N lists attachments in chat",
+        "eve attachments --message-id N shows attachments for message",
+        "eve attachments --type image filters by MIME type",
+        "eve attachments export --chat-id N --output ./dir copies files",
+        "eve attachments --json outputs JSON",
+        "Resolves file paths from ~/Library/Messages/Attachments/",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "eve analyze - On-demand conversation analysis",
+      "acceptanceCriteria": [
+        "eve analyze --chat-id N queues analysis for all conversations in chat",
+        "eve analyze --conversation-id N queues analysis for single conversation",
+        "eve analyze --contact 'name' queues analysis for all convos with contact",
+        "eve analyze --json outputs job info",
+        "Jobs appear in eve compute status",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "eve insights - Query analysis results",
+      "acceptanceCriteria": [
+        "eve insights --chat-id N shows analysis summary",
+        "eve insights topics --chat-id N lists extracted topics",
+        "eve insights entities --chat-id N lists extracted entities",
+        "eve insights emotions --chat-id N shows emotion breakdown",
+        "eve insights --contact 'name' shows insights for contact",
+        "eve insights --json outputs JSON",
+        "go test passes",
+        "go build succeeds"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

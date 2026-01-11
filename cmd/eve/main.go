@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
@@ -51,7 +52,29 @@ func recommendedSQLitePool(workerCount int) (maxOpen int, maxIdle int) {
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "eve",
-		Short: "Eve - Single binary for iMessage analysis and embeddings",
+		Short: "Eve - Personal Intelligence Engine for iMessage",
+		Long: `Eve is a personal intelligence engine for your iMessage conversations.
+
+QUICK UTILITY (imsg-compatible):
+  eve chats              List your chats
+  eve contacts           List/search contacts
+  eve messages           Query messages with powerful filters
+  eve send               Send messages via iMessage/SMS
+  eve watch              Stream incoming messages in real-time
+
+INTELLIGENCE ENGINE (the real product):
+  eve analyze            Queue AI analysis for conversations
+  eve insights           Query analysis results (topics, entities, emotions)
+  eve search             Semantic search using AI embeddings
+  eve prompt             Explore analysis prompts
+  eve pack               Explore context packs
+
+SETUP & OPERATIONS:
+  eve init               Initialize Eve databases
+  eve sync               Sync from macOS Messages database
+  eve compute run        Process analysis/embedding queue
+
+Run 'eve help' for a comprehensive guide, or 'eve <command> --help' for command details.`,
 	}
 
 	versionCmd := &cobra.Command{
@@ -63,6 +86,168 @@ func main() {
 				"go":      "1.23",
 			}
 			return printJSON(output)
+		},
+	}
+
+	// Help command - comprehensive guide for users and agents
+	helpCmd := &cobra.Command{
+		Use:   "guide",
+		Short: "Comprehensive guide to Eve's capabilities",
+		Long:  "Display a comprehensive guide explaining Eve's capabilities and usage patterns.",
+		Run: func(cmd *cobra.Command, args []string) {
+			helpText := `
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    EVE - Personal Intelligence Engine                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+Eve is TWO things:
+
+  1. A QUICK UTILITY for reading and sending iMessages (replaces imsg)
+  2. A PERSONAL INTELLIGENCE ENGINE for understanding your relationships
+
+================================================================================
+                           QUICK START (5 minutes)
+================================================================================
+
+  # Setup (one time)
+  eve init                           # Create databases
+  eve sync                           # Import your messages (~1 min for 100k msgs)
+
+  # Basic usage
+  eve contacts --top 5               # Your most messaged contacts
+  eve messages --contact "Mom"       # Recent messages with someone
+  eve send --contact "Mom" --text "Love you!"
+
+================================================================================
+                              UTILITY COMMANDS
+================================================================================
+
+CHATS - List your conversations
+  eve chats                          # All chats, most recent first
+  eve chats --limit 10               # Limit results
+  eve chats --search "Family"        # Search by name
+
+CONTACTS - Find people
+  eve contacts                       # All contacts
+  eve contacts --search "John"       # Search by name
+  eve contacts --top 10              # Top 10 by message count
+
+MESSAGES - Query message history
+  eve messages --contact "Casey"     # Messages with a contact
+  eve messages --chat-id 2           # Messages in a specific chat
+  eve messages --since 2026-01-01    # Date filtering
+  eve messages --search "dinner"     # Content search
+  eve messages --format jsonl        # Streaming output (imsg-compatible)
+
+  # Combine filters:
+  eve messages --contact "Mom" --since 2026-01-01 --search "birthday"
+
+ATTACHMENTS - List media and files
+  eve messages attachments --chat-id 2
+  eve messages attachments --type image
+  eve attachments --type video       # Also works as top-level command
+
+SEND - Send messages
+  eve send --to "+14155551212" --text "Hello!"
+  eve send --contact "Casey" --text "Hey!"
+  eve send --contact "Casey" --text "Check this" --file ~/photo.jpg
+
+WATCH - Stream incoming messages (for automation)
+  eve watch                          # All new messages
+  eve watch --chat-id 2              # Specific chat only
+
+================================================================================
+                         INTELLIGENCE ENGINE
+================================================================================
+
+This is where Eve shines. The intelligence features help you understand your
+relationships and yourself through your conversations.
+
+THE SELF-DISCOVERY JOURNEY:
+
+  Step 1: Analyze your closest relationships
+  ─────────────────────────────────────────────
+  eve analyze --contact "Casey"      # Your best friend
+  eve analyze --contact "Mom"        # Family
+  eve analyze --contact "..."        # Top 3-5 relationships
+
+  Step 2: Process the analysis queue
+  ─────────────────────────────────────────────
+  eve compute run                    # Let it process (may take a while)
+  eve compute status                 # Check progress
+
+  Step 3: Explore the insights
+  ─────────────────────────────────────────────
+  eve insights --chat-id 2           # Overview for a chat
+  eve insights topics --chat-id 2    # What you talk about
+  eve insights entities --chat-id 2  # People, places, things mentioned
+  eve insights emotions --chat-id 2  # Emotional patterns
+  eve insights humor --chat-id 2     # Funny moments
+
+  Step 4: Semantic search
+  ─────────────────────────────────────────────
+  eve search "when did we talk about moving"
+  eve search "restaurant recommendations" --chat-id 2
+
+PROMPTS & PACKS - The analysis framework
+  eve prompt list                    # See available analysis prompts
+  eve prompt show convo-all-v1       # View a specific prompt
+  eve pack list                      # See context packs
+  eve encode conversation --id 123   # Encode a conversation for LLM input
+
+================================================================================
+                              OPERATIONS
+================================================================================
+
+SETUP:
+  eve init                           # Create databases
+  eve sync                           # Sync from chat.db
+  eve sync --dry-run                 # Preview what would sync
+
+COMPUTE ENGINE:
+  eve compute status                 # Queue status
+  eve compute run                    # Process jobs
+  eve compute run --workers 20       # More parallelism
+
+INFO:
+  eve whoami                         # Your name, phone, email
+  eve paths                          # Data file locations
+  eve version                        # Version info
+
+ADVANCED - Raw SQL:
+  eve db query --sql "SELECT COUNT(*) FROM messages"
+  eve db query --sql "SELECT * FROM topics LIMIT 10"
+
+================================================================================
+                           ENVIRONMENT VARIABLES
+================================================================================
+
+  GEMINI_API_KEY      Required for semantic search and AI analysis
+  EVE_APP_DIR         Override default data directory
+  EVE_SOURCE_CHAT_DB  Override chat.db path
+
+================================================================================
+                              TIPS FOR AGENTS
+================================================================================
+
+When using Eve as an AI agent:
+
+  1. Use --format jsonl for machine-readable streaming output
+  2. Use eve whoami to learn about the user
+  3. Use eve contacts --top 5 to understand their social graph
+  4. Use eve insights to provide relationship insights
+  5. Use eve search for semantic queries about past conversations
+  6. Always confirm before sending messages
+
+Example agent workflow:
+  "What did Casey and I talk about last week?"
+  → eve messages --contact "Casey" --since 2026-01-03 --until 2026-01-10
+  → eve insights topics --contact "Casey"
+  → eve search "last week's plans" --chat-id <casey's chat>
+
+For more: https://github.com/Napageneral/eve
+`
+			fmt.Println(helpText)
 		},
 	}
 
@@ -1643,6 +1828,1392 @@ func main() {
 		},
 	}
 
+	// Chats command - list chats with names
+	var chatsLimit int
+	var chatsSearch string
+	var chatsJSON bool
+
+	chatsCmd := &cobra.Command{
+		Use:   "chats",
+		Short: "List chats sorted by recent activity",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer db.Close()
+
+			// Build query with optional search filter
+			query := `
+				SELECT 
+					c.id,
+					COALESCE(c.chat_name, '') as chat_name,
+					c.chat_identifier,
+					c.is_group,
+					c.service_name,
+					COALESCE(c.total_messages, 0) as total_messages,
+					c.last_message_date,
+					c.created_date
+				FROM chats c
+			`
+			queryArgs := []interface{}{}
+
+			if chatsSearch != "" {
+				query += ` WHERE c.chat_name LIKE ? OR c.chat_identifier LIKE ?`
+				searchPattern := "%" + chatsSearch + "%"
+				queryArgs = append(queryArgs, searchPattern, searchPattern)
+			}
+
+			query += ` ORDER BY c.last_message_date DESC NULLS LAST, c.id DESC`
+
+			if chatsLimit > 0 {
+				query += fmt.Sprintf(" LIMIT %d", chatsLimit)
+			}
+
+			rows, err := db.Query(query, queryArgs...)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("query failed: %w", err))
+			}
+			defer rows.Close()
+
+			type chatRow struct {
+				ID              int64      `json:"id"`
+				ChatName        string     `json:"chat_name"`
+				ChatIdentifier  string     `json:"chat_identifier"`
+				IsGroup         bool       `json:"is_group"`
+				ServiceName     string     `json:"service_name"`
+				TotalMessages   int        `json:"total_messages"`
+				LastMessageDate *time.Time `json:"last_message_date,omitempty"`
+				CreatedDate     *time.Time `json:"created_date,omitempty"`
+			}
+
+			var chats []chatRow
+			for rows.Next() {
+				var chat chatRow
+				var lastMsgDate, createdDate sql.NullString
+
+				err := rows.Scan(
+					&chat.ID,
+					&chat.ChatName,
+					&chat.ChatIdentifier,
+					&chat.IsGroup,
+					&chat.ServiceName,
+					&chat.TotalMessages,
+					&lastMsgDate,
+					&createdDate,
+				)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("scan failed: %w", err))
+				}
+
+				if lastMsgDate.Valid {
+					t, _ := time.Parse(time.RFC3339, lastMsgDate.String)
+					chat.LastMessageDate = &t
+				}
+				if createdDate.Valid {
+					t, _ := time.Parse(time.RFC3339, createdDate.String)
+					chat.CreatedDate = &t
+				}
+
+				chats = append(chats, chat)
+			}
+
+			if err := rows.Err(); err != nil {
+				return printErrorJSON(fmt.Errorf("rows error: %w", err))
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":    true,
+				"count": len(chats),
+				"chats": chats,
+			})
+		},
+	}
+
+	chatsCmd.Flags().IntVar(&chatsLimit, "limit", 0, "Limit number of results (0 = no limit)")
+	chatsCmd.Flags().StringVar(&chatsSearch, "search", "", "Filter chats by name or identifier")
+	chatsCmd.Flags().BoolVar(&chatsJSON, "json", true, "Output as JSON (always true)")
+
+	// Contacts command - search and list contacts
+	var contactsLimit int
+	var contactsSearch string
+	var contactsTop int
+
+	contactsCmd := &cobra.Command{
+		Use:   "contacts",
+		Short: "List and search contacts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer db.Close()
+
+			// Build query
+			query := `
+				SELECT 
+					c.id,
+					COALESCE(c.name, '') as name,
+					c.is_me,
+					c.data_source,
+					(SELECT COUNT(*) FROM messages m WHERE m.sender_id = c.id) as message_count
+				FROM contacts c
+				WHERE c.name IS NOT NULL AND c.name != ''
+			`
+			queryArgs := []interface{}{}
+
+			if contactsSearch != "" {
+				query += ` AND c.name LIKE ?`
+				queryArgs = append(queryArgs, "%"+contactsSearch+"%")
+			}
+
+			if contactsTop > 0 {
+				query += ` ORDER BY message_count DESC LIMIT ?`
+				queryArgs = append(queryArgs, contactsTop)
+			} else {
+				query += ` ORDER BY c.name ASC`
+				if contactsLimit > 0 {
+					query += fmt.Sprintf(" LIMIT %d", contactsLimit)
+				}
+			}
+
+			rows, err := db.Query(query, queryArgs...)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("query failed: %w", err))
+			}
+			defer rows.Close()
+
+			type contactRow struct {
+				ID           int64  `json:"id"`
+				Name         string `json:"name"`
+				IsMe         bool   `json:"is_me"`
+				DataSource   string `json:"data_source"`
+				MessageCount int    `json:"message_count"`
+			}
+
+			var contacts []contactRow
+			for rows.Next() {
+				var contact contactRow
+				err := rows.Scan(
+					&contact.ID,
+					&contact.Name,
+					&contact.IsMe,
+					&contact.DataSource,
+					&contact.MessageCount,
+				)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("scan failed: %w", err))
+				}
+				contacts = append(contacts, contact)
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":       true,
+				"count":    len(contacts),
+				"contacts": contacts,
+			})
+		},
+	}
+
+	contactsCmd.Flags().IntVar(&contactsLimit, "limit", 0, "Limit number of results")
+	contactsCmd.Flags().StringVar(&contactsSearch, "search", "", "Search contacts by name")
+	contactsCmd.Flags().IntVar(&contactsTop, "top", 0, "Show top N contacts by message count")
+
+	// Messages command - query messages with filters
+	var msgsChatID int
+	var msgsContact string
+	var msgsSince string
+	var msgsUntil string
+	var msgsSearch string
+	var msgsLimit int
+	var msgsFormat string
+	var msgsAttachments bool
+
+	messagesCmd := &cobra.Command{
+		Use:   "messages",
+		Short: "Query messages with filters",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer db.Close()
+
+			// Resolve contact to chat_id if specified
+			targetChatID := msgsChatID
+			if msgsContact != "" && targetChatID == 0 {
+				// Find contact by name (fuzzy match)
+				var contactID int64
+				err := db.QueryRow(`
+					SELECT id FROM contacts 
+					WHERE name LIKE ? 
+					ORDER BY 
+						CASE WHEN name = ? THEN 0 ELSE 1 END,
+						LENGTH(name)
+					LIMIT 1
+				`, "%"+msgsContact+"%", msgsContact).Scan(&contactID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("contact '%s' not found", msgsContact))
+				}
+
+				// Find chat(s) with this contact
+				err = db.QueryRow(`
+					SELECT DISTINCT m.chat_id 
+					FROM messages m 
+					WHERE m.sender_id = ? 
+					LIMIT 1
+				`, contactID).Scan(&targetChatID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("no messages found for contact '%s'", msgsContact))
+				}
+			}
+
+			// Build query
+			query := `
+				SELECT 
+					m.id,
+					m.timestamp,
+					m.content,
+					m.is_from_me,
+					m.chat_id,
+					COALESCE(c.name, '') as sender_name
+				FROM messages m
+				LEFT JOIN contacts c ON m.sender_id = c.id
+				WHERE 1=1
+			`
+			queryArgs := []interface{}{}
+
+			if targetChatID > 0 {
+				query += ` AND m.chat_id = ?`
+				queryArgs = append(queryArgs, targetChatID)
+			}
+
+			if msgsSince != "" {
+				// Parse date (supports YYYY-MM-DD or ISO8601)
+				sinceTime, err := parseDate(msgsSince)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("invalid --since date: %w", err))
+				}
+				query += ` AND m.timestamp >= ?`
+				queryArgs = append(queryArgs, sinceTime.Format(time.RFC3339))
+			}
+
+			if msgsUntil != "" {
+				untilTime, err := parseDate(msgsUntil)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("invalid --until date: %w", err))
+				}
+				query += ` AND m.timestamp < ?`
+				queryArgs = append(queryArgs, untilTime.Format(time.RFC3339))
+			}
+
+			if msgsSearch != "" {
+				query += ` AND m.content LIKE ?`
+				queryArgs = append(queryArgs, "%"+msgsSearch+"%")
+			}
+
+			query += ` ORDER BY m.timestamp DESC`
+
+			if msgsLimit > 0 {
+				query += fmt.Sprintf(" LIMIT %d", msgsLimit)
+			} else {
+				query += " LIMIT 100" // Default limit
+			}
+
+			rows, err := db.Query(query, queryArgs...)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("query failed: %w", err))
+			}
+			defer rows.Close()
+
+			type attachmentInfo struct {
+				ID       int64  `json:"id"`
+				FileName string `json:"file_name"`
+				MimeType string `json:"mime_type"`
+			}
+
+			type messageRow struct {
+				ID          int64            `json:"id"`
+				Timestamp   string           `json:"timestamp"`
+				Content     string           `json:"content"`
+				IsFromMe    bool             `json:"is_from_me"`
+				ChatID      int64            `json:"chat_id"`
+				SenderName  string           `json:"sender_name"`
+				Attachments []attachmentInfo `json:"attachments,omitempty"`
+			}
+
+			var messages []messageRow
+			for rows.Next() {
+				var msg messageRow
+				var content sql.NullString
+				err := rows.Scan(
+					&msg.ID,
+					&msg.Timestamp,
+					&content,
+					&msg.IsFromMe,
+					&msg.ChatID,
+					&msg.SenderName,
+				)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("scan failed: %w", err))
+				}
+				if content.Valid {
+					msg.Content = content.String
+				}
+				if msg.IsFromMe {
+					msg.SenderName = "Me"
+				}
+				messages = append(messages, msg)
+			}
+
+			// Load attachments if requested
+			if msgsAttachments {
+				for i := range messages {
+					attRows, err := db.Query(`
+						SELECT id, COALESCE(file_name, ''), COALESCE(mime_type, '')
+						FROM attachments WHERE message_id = ?
+					`, messages[i].ID)
+					if err != nil {
+						continue
+					}
+					for attRows.Next() {
+						var att attachmentInfo
+						attRows.Scan(&att.ID, &att.FileName, &att.MimeType)
+						messages[i].Attachments = append(messages[i].Attachments, att)
+					}
+					attRows.Close()
+				}
+			}
+
+			// Output based on format
+			if msgsFormat == "jsonl" {
+				// JSONL format - one JSON object per line (imsg-compatible)
+				type jsonlRow struct {
+					ID          int64            `json:"id"`
+					GUID        string           `json:"guid,omitempty"`
+					Timestamp   string           `json:"created_at"`
+					Content     string           `json:"text"`
+					IsFromMe    bool             `json:"is_from_me"`
+					ChatID      int64            `json:"chat_id"`
+					Sender      string           `json:"sender"`
+					Attachments []attachmentInfo `json:"attachments,omitempty"`
+				}
+				for _, msg := range messages {
+					row := jsonlRow{
+						ID:          msg.ID,
+						Timestamp:   msg.Timestamp,
+						Content:     msg.Content,
+						IsFromMe:    msg.IsFromMe,
+						ChatID:      msg.ChatID,
+						Sender:      msg.SenderName,
+						Attachments: msg.Attachments,
+					}
+					data, _ := json.Marshal(row)
+					fmt.Println(string(data))
+				}
+				return nil
+			}
+
+			// Default: wrapped JSON
+			return printJSON(map[string]interface{}{
+				"ok":       true,
+				"count":    len(messages),
+				"messages": messages,
+			})
+		},
+	}
+
+	messagesCmd.Flags().IntVar(&msgsChatID, "chat-id", 0, "Filter by chat ID")
+	messagesCmd.Flags().StringVar(&msgsContact, "contact", "", "Filter by contact name")
+	messagesCmd.Flags().StringVar(&msgsSince, "since", "", "Start date (YYYY-MM-DD or ISO8601)")
+	messagesCmd.Flags().StringVar(&msgsUntil, "until", "", "End date (YYYY-MM-DD or ISO8601)")
+	messagesCmd.Flags().StringVar(&msgsSearch, "search", "", "Search message content")
+	messagesCmd.Flags().IntVar(&msgsLimit, "limit", 100, "Limit number of results")
+	messagesCmd.Flags().StringVar(&msgsFormat, "format", "json", "Output format: json (default) or jsonl (streaming)")
+	messagesCmd.Flags().BoolVar(&msgsAttachments, "attachments", false, "Include attachment metadata")
+
+	// Messages attachments subcommand
+	var msgsAttChatID int
+	var msgsAttMessageID int64
+	var msgsAttType string
+	var msgsAttLimit int
+
+	messagesAttachmentsCmd := &cobra.Command{
+		Use:   "attachments",
+		Short: "List attachments from messages",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer db.Close()
+
+			query := `
+				SELECT 
+					a.id,
+					a.message_id,
+					a.file_name,
+					a.mime_type,
+					a.size,
+					a.is_sticker,
+					m.chat_id
+				FROM attachments a
+				JOIN messages m ON a.message_id = m.id
+				WHERE 1=1
+			`
+			queryArgs := []interface{}{}
+
+			if msgsAttChatID > 0 {
+				query += ` AND m.chat_id = ?`
+				queryArgs = append(queryArgs, msgsAttChatID)
+			}
+
+			if msgsAttMessageID > 0 {
+				query += ` AND a.message_id = ?`
+				queryArgs = append(queryArgs, msgsAttMessageID)
+			}
+
+			if msgsAttType != "" {
+				query += ` AND a.mime_type LIKE ?`
+				queryArgs = append(queryArgs, msgsAttType+"%")
+			}
+
+			query += ` ORDER BY a.id DESC`
+
+			if msgsAttLimit > 0 {
+				query += fmt.Sprintf(" LIMIT %d", msgsAttLimit)
+			} else {
+				query += " LIMIT 100"
+			}
+
+			rows, err := db.Query(query, queryArgs...)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("query failed: %w", err))
+			}
+			defer rows.Close()
+
+			type attachmentRow struct {
+				ID        int64  `json:"id"`
+				MessageID int64  `json:"message_id"`
+				FileName  string `json:"file_name"`
+				MimeType  string `json:"mime_type"`
+				Size      int64  `json:"size"`
+				IsSticker bool   `json:"is_sticker"`
+				ChatID    int64  `json:"chat_id"`
+			}
+
+			var attachments []attachmentRow
+			for rows.Next() {
+				var att attachmentRow
+				var fileName, mimeType sql.NullString
+				var size sql.NullInt64
+
+				err := rows.Scan(
+					&att.ID,
+					&att.MessageID,
+					&fileName,
+					&mimeType,
+					&size,
+					&att.IsSticker,
+					&att.ChatID,
+				)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("scan failed: %w", err))
+				}
+
+				if fileName.Valid {
+					att.FileName = fileName.String
+				}
+				if mimeType.Valid {
+					att.MimeType = mimeType.String
+				}
+				if size.Valid {
+					att.Size = size.Int64
+				}
+
+				attachments = append(attachments, att)
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":          true,
+				"count":       len(attachments),
+				"attachments": attachments,
+			})
+		},
+	}
+
+	messagesAttachmentsCmd.Flags().IntVar(&msgsAttChatID, "chat-id", 0, "Filter by chat ID")
+	messagesAttachmentsCmd.Flags().Int64Var(&msgsAttMessageID, "message-id", 0, "Filter by message ID")
+	messagesAttachmentsCmd.Flags().StringVar(&msgsAttType, "type", "", "Filter by MIME type prefix (e.g., 'image', 'video')")
+	messagesAttachmentsCmd.Flags().IntVar(&msgsAttLimit, "limit", 100, "Limit number of results")
+
+	messagesCmd.AddCommand(messagesAttachmentsCmd)
+
+	// History command - imsg-compatible message history
+	var historyChatID int
+	var historyLimit int
+	var historyStart string
+	var historyEnd string
+	var historyAttachments bool
+
+	historyCmd := &cobra.Command{
+		Use:        "history",
+		Short:      "Show message history (alias for 'messages --format jsonl')",
+		Deprecated: "use 'eve messages --format jsonl' instead",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if historyChatID == 0 {
+				return printErrorJSON(fmt.Errorf("--chat-id is required"))
+			}
+
+			cfg := config.Load()
+
+			db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer db.Close()
+
+			// Build query
+			query := `
+				SELECT 
+					m.id,
+					m.guid,
+					m.timestamp,
+					m.content,
+					m.is_from_me,
+					m.chat_id,
+					COALESCE(c.name, '') as sender_name
+				FROM messages m
+				LEFT JOIN contacts c ON m.sender_id = c.id
+				WHERE m.chat_id = ?
+			`
+			queryArgs := []interface{}{historyChatID}
+
+			if historyStart != "" {
+				startTime, err := parseDate(historyStart)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("invalid --start date: %w", err))
+				}
+				query += ` AND m.timestamp >= ?`
+				queryArgs = append(queryArgs, startTime.Format(time.RFC3339))
+			}
+
+			if historyEnd != "" {
+				endTime, err := parseDate(historyEnd)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("invalid --end date: %w", err))
+				}
+				query += ` AND m.timestamp < ?`
+				queryArgs = append(queryArgs, endTime.Format(time.RFC3339))
+			}
+
+			query += ` ORDER BY m.timestamp DESC`
+
+			if historyLimit > 0 {
+				query += fmt.Sprintf(" LIMIT %d", historyLimit)
+			} else {
+				query += " LIMIT 50"
+			}
+
+			rows, err := db.Query(query, queryArgs...)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("query failed: %w", err))
+			}
+			defer rows.Close()
+
+			type attachmentInfo struct {
+				ID       int64  `json:"id"`
+				FileName string `json:"file_name"`
+				MimeType string `json:"mime_type"`
+			}
+
+			type historyRow struct {
+				ID          int64            `json:"id"`
+				GUID        string           `json:"guid"`
+				Timestamp   string           `json:"created_at"`
+				Content     string           `json:"text"`
+				IsFromMe    bool             `json:"is_from_me"`
+				ChatID      int64            `json:"chat_id"`
+				Sender      string           `json:"sender"`
+				Attachments []attachmentInfo `json:"attachments,omitempty"`
+			}
+
+			var messages []historyRow
+			for rows.Next() {
+				var msg historyRow
+				var content sql.NullString
+				err := rows.Scan(
+					&msg.ID,
+					&msg.GUID,
+					&msg.Timestamp,
+					&content,
+					&msg.IsFromMe,
+					&msg.ChatID,
+					&msg.Sender,
+				)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("scan failed: %w", err))
+				}
+				if content.Valid {
+					msg.Content = content.String
+				}
+				if msg.IsFromMe {
+					msg.Sender = "Me"
+				}
+				messages = append(messages, msg)
+			}
+
+			// Load attachments if requested
+			if historyAttachments {
+				for i := range messages {
+					attRows, err := db.Query(`
+						SELECT id, COALESCE(file_name, ''), COALESCE(mime_type, '')
+						FROM attachments WHERE message_id = ?
+					`, messages[i].ID)
+					if err != nil {
+						continue
+					}
+					for attRows.Next() {
+						var att attachmentInfo
+						attRows.Scan(&att.ID, &att.FileName, &att.MimeType)
+						messages[i].Attachments = append(messages[i].Attachments, att)
+					}
+					attRows.Close()
+				}
+			}
+
+			// Output in imsg-compatible format (one JSON per line for streaming)
+			for _, msg := range messages {
+				data, _ := json.Marshal(msg)
+				fmt.Println(string(data))
+			}
+			return nil
+		},
+	}
+
+	historyCmd.Flags().IntVar(&historyChatID, "chat-id", 0, "Chat ID (required)")
+	historyCmd.Flags().IntVar(&historyLimit, "limit", 50, "Limit number of messages")
+	historyCmd.Flags().StringVar(&historyStart, "start", "", "Start date (ISO8601)")
+	historyCmd.Flags().StringVar(&historyEnd, "end", "", "End date (ISO8601)")
+	historyCmd.Flags().BoolVar(&historyAttachments, "attachments", false, "Include attachment metadata")
+
+	// Send command - send messages via AppleScript
+	var sendTo string
+	var sendChatID int
+	var sendContact string
+	var sendText string
+	var sendFile string
+	var sendService string
+
+	sendCmd := &cobra.Command{
+		Use:   "send",
+		Short: "Send a message via iMessage/SMS",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if sendText == "" && sendFile == "" {
+				return printErrorJSON(fmt.Errorf("--text or --file is required"))
+			}
+
+			// Resolve recipient
+			recipient := sendTo
+			if sendContact != "" && recipient == "" {
+				// Resolve contact name to phone/email
+				cfg := config.Load()
+				db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+				}
+				defer db.Close()
+
+				// Find contact and their identifier
+				var identifier string
+				err = db.QueryRow(`
+					SELECT ci.identifier 
+					FROM contacts c
+					JOIN contact_identifiers ci ON ci.contact_id = c.id
+					WHERE c.name LIKE ?
+					ORDER BY 
+						CASE WHEN c.name = ? THEN 0 ELSE 1 END,
+						LENGTH(c.name)
+					LIMIT 1
+				`, "%"+sendContact+"%", sendContact).Scan(&identifier)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("contact '%s' not found or has no identifier", sendContact))
+				}
+				recipient = identifier
+			}
+
+			if sendChatID > 0 && recipient == "" {
+				// Get chat identifier from chat ID
+				cfg := config.Load()
+				db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+				}
+				defer db.Close()
+
+				err = db.QueryRow(`SELECT chat_identifier FROM chats WHERE id = ?`, sendChatID).Scan(&recipient)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("chat ID %d not found", sendChatID))
+				}
+			}
+
+			if recipient == "" {
+				return printErrorJSON(fmt.Errorf("--to, --chat-id, or --contact is required"))
+			}
+
+			// Build AppleScript
+			var script string
+			if sendFile != "" {
+				// Send with attachment
+				script = fmt.Sprintf(`
+					tell application "Messages"
+						set targetService to 1st account whose service type = iMessage
+						set targetBuddy to participant "%s" of targetService
+						send "%s" to targetBuddy
+						send POSIX file "%s" to targetBuddy
+					end tell
+				`, escapeAppleScript(recipient), escapeAppleScript(sendText), escapeAppleScript(sendFile))
+			} else {
+				// Text only
+				script = fmt.Sprintf(`
+					tell application "Messages"
+						set targetService to 1st account whose service type = iMessage
+						set targetBuddy to participant "%s" of targetService
+						send "%s" to targetBuddy
+					end tell
+				`, escapeAppleScript(recipient), escapeAppleScript(sendText))
+			}
+
+			// Execute AppleScript
+			execCmd := exec.Command("osascript", "-e", script)
+			output, err := execCmd.CombinedOutput()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to send message: %s (output: %s)", err, string(output)))
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":        true,
+				"sent":      true,
+				"recipient": recipient,
+				"text":      sendText,
+				"file":      sendFile,
+			})
+		},
+	}
+
+	sendCmd.Flags().StringVar(&sendTo, "to", "", "Recipient phone number or email")
+	sendCmd.Flags().IntVar(&sendChatID, "chat-id", 0, "Send to existing chat by ID")
+	sendCmd.Flags().StringVar(&sendContact, "contact", "", "Send to contact by name")
+	sendCmd.Flags().StringVar(&sendText, "text", "", "Message text")
+	sendCmd.Flags().StringVar(&sendFile, "file", "", "Path to attachment file")
+	sendCmd.Flags().StringVar(&sendService, "service", "imessage", "Service: imessage or sms")
+
+	// Watch command - stream incoming messages
+	var watchChatID int
+	var watchSinceRowID int64
+	var watchPollInterval int
+
+	watchCmd := &cobra.Command{
+		Use:   "watch",
+		Short: "Stream incoming messages in real-time",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Get chat.db path
+			chatDBPath := etl.GetChatDBPath()
+			if chatDBPath == "" {
+				return printErrorJSON(fmt.Errorf("failed to determine chat.db path"))
+			}
+
+			// Open chat.db for reading
+			chatDB, err := sql.Open("sqlite3", chatDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open chat.db: %w", err))
+			}
+			defer chatDB.Close()
+
+			// Get initial max rowid if not specified
+			lastRowID := watchSinceRowID
+			if lastRowID == 0 {
+				err := chatDB.QueryRow("SELECT COALESCE(MAX(ROWID), 0) FROM message").Scan(&lastRowID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to get max rowid: %w", err))
+				}
+			}
+
+			// Print startup message to stderr so stdout stays clean for JSON
+			fmt.Fprintf(os.Stderr, "Watching for new messages (since rowid %d)...\n", lastRowID)
+
+			// Setup signal handling
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sigChan := make(chan os.Signal, 1)
+			signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+			go func() {
+				<-sigChan
+				cancel()
+			}()
+
+			// Poll interval
+			pollDuration := time.Duration(watchPollInterval) * time.Millisecond
+			if pollDuration < 100*time.Millisecond {
+				pollDuration = 250 * time.Millisecond
+			}
+
+			ticker := time.NewTicker(pollDuration)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					// Query for new messages
+					query := `
+						SELECT 
+							m.ROWID,
+							m.guid,
+							m.text,
+							m.is_from_me,
+							m.date,
+							COALESCE(h.id, '') as sender_id,
+							COALESCE(c.ROWID, 0) as chat_id,
+							COALESCE(c.display_name, '') as chat_name
+						FROM message m
+						LEFT JOIN handle h ON m.handle_id = h.ROWID
+						LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+						LEFT JOIN chat c ON cmj.chat_id = c.ROWID
+						WHERE m.ROWID > ?
+					`
+					queryArgs := []interface{}{lastRowID}
+
+					if watchChatID > 0 {
+						query += ` AND c.ROWID = ?`
+						queryArgs = append(queryArgs, watchChatID)
+					}
+
+					query += ` ORDER BY m.ROWID ASC`
+
+					rows, err := chatDB.Query(query, queryArgs...)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Query error: %v\n", err)
+						continue
+					}
+
+					for rows.Next() {
+						var rowID int64
+						var guid, text, senderID, chatName string
+						var isFromMe bool
+						var dateNano int64
+						var chatID int64
+
+						err := rows.Scan(&rowID, &guid, &text, &isFromMe, &dateNano, &senderID, &chatID, &chatName)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Scan error: %v\n", err)
+							continue
+						}
+
+						// Convert Apple timestamp to ISO8601
+						appleEpoch := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+						timestamp := appleEpoch.Add(time.Duration(dateNano) * time.Nanosecond)
+
+						// Output JSON event
+						event := map[string]interface{}{
+							"event":      "message",
+							"rowid":      rowID,
+							"guid":       guid,
+							"text":       text,
+							"is_from_me": isFromMe,
+							"timestamp":  timestamp.Format(time.RFC3339),
+							"sender":     senderID,
+							"chat_id":    chatID,
+							"chat_name":  chatName,
+						}
+
+						data, _ := json.Marshal(event)
+						fmt.Println(string(data))
+
+						if rowID > lastRowID {
+							lastRowID = rowID
+						}
+					}
+					rows.Close()
+				}
+			}
+		},
+	}
+
+	watchCmd.Flags().IntVar(&watchChatID, "chat-id", 0, "Filter to specific chat")
+	watchCmd.Flags().Int64Var(&watchSinceRowID, "since-rowid", 0, "Start watching from this rowid (0 = current)")
+	watchCmd.Flags().IntVar(&watchPollInterval, "poll", 250, "Poll interval in milliseconds")
+
+	// Search command - semantic search using embeddings
+	var searchChatID int
+	var searchLimit int
+
+	searchCmd := &cobra.Command{
+		Use:   "search [query]",
+		Short: "Semantic search across conversations using embeddings",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := strings.Join(args, " ")
+			if query == "" {
+				return printErrorJSON(fmt.Errorf("search query is required"))
+			}
+
+			cfg := config.Load()
+			if cfg.GeminiAPIKey == "" {
+				return printErrorJSON(fmt.Errorf("GEMINI_API_KEY is required for semantic search"))
+			}
+
+			// Open warehouse database
+			warehouseDB, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer warehouseDB.Close()
+
+			// Generate embedding for query
+			geminiClient := gemini.NewClient(cfg.GeminiAPIKey)
+			req := gemini.EmbedContentRequest{
+				Model: cfg.EmbedModel,
+				Content: gemini.Content{
+					Parts: []gemini.Part{{Text: query}},
+				},
+			}
+
+			resp, err := geminiClient.EmbedContent(&req)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to generate query embedding: %w", err))
+			}
+
+			if resp.Embedding == nil || len(resp.Embedding.Values) == 0 {
+				return printErrorJSON(fmt.Errorf("empty embedding response"))
+			}
+
+			queryEmbedding := resp.Embedding.Values
+
+			// Load conversation embeddings from database
+			embQuery := `
+				SELECT e.entity_id, e.embedding_blob, c.chat_id, ch.chat_name
+				FROM embeddings e
+				JOIN conversations c ON e.entity_id = c.id
+				JOIN chats ch ON c.chat_id = ch.id
+				WHERE e.entity_type = 'conversation'
+			`
+			embArgs := []interface{}{}
+
+			if searchChatID > 0 {
+				embQuery += ` AND c.chat_id = ?`
+				embArgs = append(embArgs, searchChatID)
+			}
+
+			rows, err := warehouseDB.Query(embQuery, embArgs...)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to query embeddings: %w", err))
+			}
+			defer rows.Close()
+
+			type searchResult struct {
+				ConversationID int64   `json:"conversation_id"`
+				ChatID         int64   `json:"chat_id"`
+				ChatName       string  `json:"chat_name"`
+				Score          float64 `json:"score"`
+				Snippet        string  `json:"snippet,omitempty"`
+			}
+
+			var results []searchResult
+
+			for rows.Next() {
+				var convID, chatID int64
+				var embeddingBlob []byte
+				var chatName sql.NullString
+
+				err := rows.Scan(&convID, &embeddingBlob, &chatID, &chatName)
+				if err != nil {
+					continue
+				}
+
+				// Convert blob to float64 slice
+				convEmbedding, err := blobToFloat64Slice(embeddingBlob)
+				if err != nil {
+					continue
+				}
+
+				// Compute cosine similarity
+				score := cosineSimilarity(queryEmbedding, convEmbedding)
+
+				name := ""
+				if chatName.Valid {
+					name = chatName.String
+				}
+
+				results = append(results, searchResult{
+					ConversationID: convID,
+					ChatID:         chatID,
+					ChatName:       name,
+					Score:          score,
+				})
+			}
+
+			// Sort by score descending
+			for i := 0; i < len(results)-1; i++ {
+				for j := i + 1; j < len(results); j++ {
+					if results[j].Score > results[i].Score {
+						results[i], results[j] = results[j], results[i]
+					}
+				}
+			}
+
+			// Limit results
+			limit := searchLimit
+			if limit <= 0 {
+				limit = 10
+			}
+			if len(results) > limit {
+				results = results[:limit]
+			}
+
+			// Load snippets for top results
+			for i := range results {
+				var snippet string
+				err := warehouseDB.QueryRow(`
+					SELECT GROUP_CONCAT(content, ' | ')
+					FROM (
+						SELECT content FROM messages 
+						WHERE conversation_id = ? AND content IS NOT NULL AND content != ''
+						ORDER BY timestamp DESC LIMIT 3
+					)
+				`, results[i].ConversationID).Scan(&snippet)
+				if err == nil && snippet != "" {
+					if len(snippet) > 200 {
+						snippet = snippet[:200] + "..."
+					}
+					results[i].Snippet = snippet
+				}
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":      true,
+				"query":   query,
+				"count":   len(results),
+				"results": results,
+			})
+		},
+	}
+
+	searchCmd.Flags().IntVar(&searchChatID, "chat-id", 0, "Limit search to specific chat")
+	searchCmd.Flags().IntVar(&searchLimit, "limit", 10, "Maximum number of results")
+
+	// Attachments command - list and export attachments
+	var attChatID int
+	var attMessageID int64
+	var attType string
+	var attLimit int
+
+	attachmentsCmd := &cobra.Command{
+		Use:   "attachments",
+		Short: "List attachments (alias for 'messages attachments')",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer db.Close()
+
+			query := `
+				SELECT 
+					a.id,
+					a.message_id,
+					a.file_name,
+					a.mime_type,
+					a.size,
+					a.is_sticker,
+					m.chat_id
+				FROM attachments a
+				JOIN messages m ON a.message_id = m.id
+				WHERE 1=1
+			`
+			queryArgs := []interface{}{}
+
+			if attChatID > 0 {
+				query += ` AND m.chat_id = ?`
+				queryArgs = append(queryArgs, attChatID)
+			}
+
+			if attMessageID > 0 {
+				query += ` AND a.message_id = ?`
+				queryArgs = append(queryArgs, attMessageID)
+			}
+
+			if attType != "" {
+				query += ` AND a.mime_type LIKE ?`
+				queryArgs = append(queryArgs, attType+"%")
+			}
+
+			query += ` ORDER BY a.id DESC`
+
+			if attLimit > 0 {
+				query += fmt.Sprintf(" LIMIT %d", attLimit)
+			} else {
+				query += " LIMIT 100"
+			}
+
+			rows, err := db.Query(query, queryArgs...)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("query failed: %w", err))
+			}
+			defer rows.Close()
+
+			type attachmentRow struct {
+				ID        int64  `json:"id"`
+				MessageID int64  `json:"message_id"`
+				FileName  string `json:"file_name"`
+				MimeType  string `json:"mime_type"`
+				Size      int64  `json:"size"`
+				IsSticker bool   `json:"is_sticker"`
+				ChatID    int64  `json:"chat_id"`
+			}
+
+			var attachments []attachmentRow
+			for rows.Next() {
+				var att attachmentRow
+				var fileName, mimeType sql.NullString
+				var size sql.NullInt64
+
+				err := rows.Scan(
+					&att.ID,
+					&att.MessageID,
+					&fileName,
+					&mimeType,
+					&size,
+					&att.IsSticker,
+					&att.ChatID,
+				)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("scan failed: %w", err))
+				}
+
+				if fileName.Valid {
+					att.FileName = fileName.String
+				}
+				if mimeType.Valid {
+					att.MimeType = mimeType.String
+				}
+				if size.Valid {
+					att.Size = size.Int64
+				}
+
+				attachments = append(attachments, att)
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":          true,
+				"count":       len(attachments),
+				"attachments": attachments,
+			})
+		},
+	}
+
+	attachmentsCmd.Flags().IntVar(&attChatID, "chat-id", 0, "Filter by chat ID")
+	attachmentsCmd.Flags().Int64Var(&attMessageID, "message-id", 0, "Filter by message ID")
+	attachmentsCmd.Flags().StringVar(&attType, "type", "", "Filter by MIME type prefix (e.g., 'image', 'video')")
+	attachmentsCmd.Flags().IntVar(&attLimit, "limit", 100, "Limit number of results")
+
+	// Analyze command - queue analysis jobs
+	var analyzeChatID int
+	var analyzeConvoID int
+	var analyzeContact string
+
+	analyzeCmd := &cobra.Command{
+		Use:   "analyze",
+		Short: "Queue conversation analysis jobs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			// Open warehouse and queue databases
+			warehouseDB, err := sql.Open("sqlite3", cfg.EveDBPath)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open warehouse database: %w", err))
+			}
+			defer warehouseDB.Close()
+
+			queueDB, err := sql.Open("sqlite3", cfg.QueueDBPath)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open queue database: %w", err))
+			}
+			defer queueDB.Close()
+
+			q := queue.New(queueDB)
+
+			var conversationIDs []int
+
+			if analyzeConvoID > 0 {
+				// Single conversation
+				conversationIDs = append(conversationIDs, analyzeConvoID)
+			} else if analyzeChatID > 0 {
+				// All conversations in chat
+				rows, err := warehouseDB.Query(`SELECT id FROM conversations WHERE chat_id = ?`, analyzeChatID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to query conversations: %w", err))
+				}
+				for rows.Next() {
+					var id int
+					rows.Scan(&id)
+					conversationIDs = append(conversationIDs, id)
+				}
+				rows.Close()
+			} else if analyzeContact != "" {
+				// Find contact and their chats
+				var contactID int64
+				err := warehouseDB.QueryRow(`
+					SELECT id FROM contacts WHERE name LIKE ? LIMIT 1
+				`, "%"+analyzeContact+"%").Scan(&contactID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("contact '%s' not found", analyzeContact))
+				}
+
+				rows, err := warehouseDB.Query(`
+					SELECT DISTINCT c.id 
+					FROM conversations c
+					JOIN messages m ON m.conversation_id = c.id
+					WHERE m.sender_id = ?
+				`, contactID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to query conversations: %w", err))
+				}
+				for rows.Next() {
+					var id int
+					rows.Scan(&id)
+					conversationIDs = append(conversationIDs, id)
+				}
+				rows.Close()
+			} else {
+				return printErrorJSON(fmt.Errorf("--chat-id, --conversation-id, or --contact is required"))
+			}
+
+			// Queue analysis jobs
+			enqueued := 0
+			for _, convID := range conversationIDs {
+				err := q.Enqueue(queue.EnqueueOptions{
+					Type:     "analysis",
+					Key:      fmt.Sprintf("analysis:conversation:%d:convo-all-v1", convID),
+					Priority: 20,
+					Payload: map[string]interface{}{
+						"conversation_id": convID,
+						"eve_prompt_id":   "convo-all-v1",
+					},
+					MaxAttempts: 3,
+				})
+				if err == nil {
+					enqueued++
+				}
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":                  true,
+				"conversations_found": len(conversationIDs),
+				"jobs_enqueued":       enqueued,
+				"message":             "Run 'eve compute run' to process queued jobs",
+			})
+		},
+	}
+
+	analyzeCmd.Flags().IntVar(&analyzeChatID, "chat-id", 0, "Analyze all conversations in chat")
+	analyzeCmd.Flags().IntVar(&analyzeConvoID, "conversation-id", 0, "Analyze single conversation")
+	analyzeCmd.Flags().StringVar(&analyzeContact, "contact", "", "Analyze all conversations with contact")
+
+	// Insights command - query analysis results
+	var insightsChatID int
+	var insightsContact string
+	var insightsType string
+
+	insightsCmd := &cobra.Command{
+		Use:   "insights [type]",
+		Short: "Query analysis results (topics, entities, emotions, humor)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			db, err := sql.Open("sqlite3", cfg.EveDBPath+"?mode=ro")
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to open database: %w", err))
+			}
+			defer db.Close()
+
+			// Determine insight type
+			insightType := insightsType
+			if len(args) > 0 {
+				insightType = args[0]
+			}
+
+			// Resolve contact to chat_id if needed
+			targetChatID := insightsChatID
+			if insightsContact != "" && targetChatID == 0 {
+				var contactID int64
+				err := db.QueryRow(`SELECT id FROM contacts WHERE name LIKE ? LIMIT 1`, "%"+insightsContact+"%").Scan(&contactID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("contact '%s' not found", insightsContact))
+				}
+				err = db.QueryRow(`SELECT DISTINCT chat_id FROM messages WHERE sender_id = ? LIMIT 1`, contactID).Scan(&targetChatID)
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("no messages found for contact"))
+				}
+			}
+
+			switch insightType {
+			case "topics":
+				return queryInsights(db, "topics", "title", targetChatID)
+			case "entities":
+				return queryInsights(db, "entities", "title", targetChatID)
+			case "emotions":
+				return queryInsights(db, "emotions", "emotion_type", targetChatID)
+			case "humor":
+				return queryInsights(db, "humor_items", "snippet", targetChatID)
+			default:
+				// Summary view
+				var topicsCount, entitiesCount, emotionsCount, humorCount int
+
+				if targetChatID > 0 {
+					db.QueryRow(`SELECT COUNT(*) FROM topics WHERE chat_id = ?`, targetChatID).Scan(&topicsCount)
+					db.QueryRow(`SELECT COUNT(*) FROM entities WHERE chat_id = ?`, targetChatID).Scan(&entitiesCount)
+					db.QueryRow(`SELECT COUNT(*) FROM emotions WHERE chat_id = ?`, targetChatID).Scan(&emotionsCount)
+					db.QueryRow(`SELECT COUNT(*) FROM humor_items WHERE chat_id = ?`, targetChatID).Scan(&humorCount)
+				} else {
+					db.QueryRow(`SELECT COUNT(*) FROM topics`).Scan(&topicsCount)
+					db.QueryRow(`SELECT COUNT(*) FROM entities`).Scan(&entitiesCount)
+					db.QueryRow(`SELECT COUNT(*) FROM emotions`).Scan(&emotionsCount)
+					db.QueryRow(`SELECT COUNT(*) FROM humor_items`).Scan(&humorCount)
+				}
+
+				return printJSON(map[string]interface{}{
+					"ok":      true,
+					"chat_id": targetChatID,
+					"summary": map[string]int{
+						"topics":      topicsCount,
+						"entities":    entitiesCount,
+						"emotions":    emotionsCount,
+						"humor_items": humorCount,
+					},
+					"hint": "Use 'eve insights topics', 'eve insights entities', etc. for details",
+				})
+			}
+		},
+	}
+
+	insightsCmd.Flags().IntVar(&insightsChatID, "chat-id", 0, "Filter by chat ID")
+	insightsCmd.Flags().StringVar(&insightsContact, "contact", "", "Filter by contact name")
+	insightsCmd.Flags().StringVar(&insightsType, "type", "", "Insight type: topics, entities, emotions, humor")
+
+	rootCmd.AddCommand(helpCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
 	rootCmd.AddCommand(initCmd)
@@ -1654,6 +3225,16 @@ func main() {
 	rootCmd.AddCommand(encodeCmd)
 	rootCmd.AddCommand(resourcesCmd)
 	rootCmd.AddCommand(whoamiCmd)
+	rootCmd.AddCommand(chatsCmd)
+	rootCmd.AddCommand(contactsCmd)
+	rootCmd.AddCommand(messagesCmd)
+	rootCmd.AddCommand(historyCmd)
+	rootCmd.AddCommand(sendCmd)
+	rootCmd.AddCommand(watchCmd)
+	rootCmd.AddCommand(searchCmd)
+	rootCmd.AddCommand(attachmentsCmd)
+	rootCmd.AddCommand(analyzeCmd)
+	rootCmd.AddCommand(insightsCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1689,4 +3270,130 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// escapeAppleScript escapes a string for use in AppleScript
+func escapeAppleScript(s string) string {
+	// Escape backslashes first, then quotes
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return s
+}
+
+// parseDate parses various date formats: YYYY-MM-DD, ISO8601, or relative
+func parseDate(s string) (time.Time, error) {
+	// Try ISO8601 first
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// Try date only (YYYY-MM-DD)
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	// Try datetime without timezone
+	if t, err := time.Parse("2006-01-02T15:04:05", s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognized date format: %s (use YYYY-MM-DD or ISO8601)", s)
+}
+
+// blobToFloat64Slice converts a byte slice back to float64 slice
+func blobToFloat64Slice(blob []byte) ([]float64, error) {
+	if len(blob)%8 != 0 {
+		return nil, fmt.Errorf("invalid blob length: %d (must be multiple of 8)", len(blob))
+	}
+
+	values := make([]float64, len(blob)/8)
+	for i := 0; i < len(values); i++ {
+		bits := uint64(blob[i*8]) | uint64(blob[i*8+1])<<8 | uint64(blob[i*8+2])<<16 | uint64(blob[i*8+3])<<24 |
+			uint64(blob[i*8+4])<<32 | uint64(blob[i*8+5])<<40 | uint64(blob[i*8+6])<<48 | uint64(blob[i*8+7])<<56
+		values[i] = float64frombits(bits)
+	}
+	return values, nil
+}
+
+// float64frombits converts uint64 bits to float64
+func float64frombits(b uint64) float64 {
+	return *(*float64)(unsafe.Pointer(&b))
+}
+
+// cosineSimilarity computes cosine similarity between two vectors
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+
+	var dotProduct, normA, normB float64
+	for i := range a {
+		dotProduct += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+
+	return dotProduct / (sqrt(normA) * sqrt(normB))
+}
+
+// sqrt computes square root (avoiding math import for simplicity)
+func sqrt(x float64) float64 {
+	if x < 0 {
+		return 0
+	}
+	z := x / 2
+	for i := 0; i < 10; i++ {
+		z = z - (z*z-x)/(2*z)
+	}
+	return z
+}
+
+// queryInsights queries a specific insight table and returns results
+func queryInsights(db *sql.DB, table, column string, chatID int) error {
+	query := fmt.Sprintf(`
+		SELECT %s, COUNT(*) as count
+		FROM %s
+	`, column, table)
+
+	queryArgs := []interface{}{}
+	if chatID > 0 {
+		query += ` WHERE chat_id = ?`
+		queryArgs = append(queryArgs, chatID)
+	}
+
+	query += fmt.Sprintf(` GROUP BY %s ORDER BY count DESC LIMIT 50`, column)
+
+	rows, err := db.Query(query, queryArgs...)
+	if err != nil {
+		return printErrorJSON(fmt.Errorf("query failed: %w", err))
+	}
+	defer rows.Close()
+
+	type insightRow struct {
+		Value string `json:"value"`
+		Count int    `json:"count"`
+	}
+
+	var insights []insightRow
+	for rows.Next() {
+		var insight insightRow
+		var value sql.NullString
+		err := rows.Scan(&value, &insight.Count)
+		if err != nil {
+			continue
+		}
+		if value.Valid {
+			insight.Value = value.String
+		}
+		insights = append(insights, insight)
+	}
+
+	return printJSON(map[string]interface{}{
+		"ok":       true,
+		"type":     table,
+		"chat_id":  chatID,
+		"count":    len(insights),
+		"insights": insights,
+	})
 }

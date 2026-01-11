@@ -1,0 +1,114 @@
+# Ralph Progress Log
+
+Started: 2026-01-10
+Project: Eve CLI Consolidation
+
+## Codebase Patterns
+
+<!-- Add reusable patterns here as you discover them -->
+
+- JSON output: Use `printJSON(map[string]interface{}{...})` for all command output
+- Error output: Use `printErrorJSON(fmt.Errorf("..."))` for errors
+- Config loading: Use `cfg := config.Load()` to get paths
+- Database paths: `cfg.EveDBPath` for warehouse, `cfg.QueueDBPath` for queue
+- SQL queries: Always raw SQL, no ORM
+- Cobra flags: Define vars above command, bind with `cmd.Flags().StringVar(&var, "flag", "default", "description")`
+- Tests: Create `*_test.go` in same package, use `testing` package
+
+## Key Files
+
+- `cmd/eve/main.go` - All CLI commands defined here
+- `internal/db/query.go` - SQL execution helpers
+- `internal/db/reader.go` - Conversation reader
+- `internal/config/config.go` - Config and paths
+- `internal/etl/chatdb.go` - chat.db access
+
+---
+
+## 2026-01-10 - US-001: eve chats - List chats with names
+- Implemented `eve chats` command with --limit, --search, --json flags
+- Files changed: cmd/eve/main.go
+- **Learnings:**
+  - Variable name `args` conflicts with Cobra's command args parameter - use `queryArgs` instead
+  - SQL NULLS LAST for proper ordering of null dates
+
+---
+
+## 2026-01-10 - US-002: eve contacts - Search and list contacts
+- Implemented `eve contacts` command with --limit, --search, --top flags
+- Includes message count per contact via subquery
+- Files changed: cmd/eve/main.go
+
+---
+
+## 2026-01-10 - US-003: eve messages - Query messages with filters
+- Implemented `eve messages` with --chat-id, --contact, --since, --until, --search, --limit
+- Added `parseDate()` helper for flexible date parsing
+- Contact resolution via fuzzy name match
+- Files changed: cmd/eve/main.go
+
+---
+
+## 2026-01-10 - US-004: eve history - imsg-compatible message history
+- Implemented `eve history` with imsg-compatible JSON output (one per line)
+- Supports --chat-id, --limit, --start, --end, --attachments
+- Files changed: cmd/eve/main.go
+
+---
+
+## 2026-01-10 - US-005: eve send - Send messages via AppleScript
+- Implemented `eve send` with --to, --chat-id, --contact, --text, --file
+- Uses osascript to execute AppleScript for sending
+- Added `escapeAppleScript()` helper for safe string escaping
+- Files changed: cmd/eve/main.go
+- **Learnings:**
+  - AppleScript strings need backslash and quote escaping
+
+---
+
+## 2026-01-10 - US-006: eve watch - Stream incoming messages
+- Implemented `eve watch` with --chat-id, --since-rowid, --poll flags
+- Polls chat.db directly for new messages
+- Outputs JSON events to stdout, status to stderr
+- Graceful shutdown on SIGINT/SIGTERM
+- Files changed: cmd/eve/main.go
+- **Learnings:**
+  - Apple timestamps are nanoseconds since 2001-01-01
+  - Use context.WithCancel for clean signal handling
+
+---
+
+## 2026-01-10 - US-007: eve search - Semantic search using embeddings
+- Implemented `eve search` with --chat-id, --limit flags
+- Embeds query using Gemini API
+- Computes cosine similarity against stored embeddings
+- Returns ranked results with conversation snippets
+- Added helper functions: blobToFloat64Slice, cosineSimilarity, sqrt
+- Files changed: cmd/eve/main.go
+- **Learnings:**
+  - Embeddings stored as little-endian float64 blobs
+  - Need unsafe package for float64frombits
+
+---
+
+## 2026-01-10 - US-008: eve attachments - List attachments
+- Implemented `eve attachments` with --chat-id, --message-id, --type, --limit
+- Queries attachments table joined with messages
+- Files changed: cmd/eve/main.go
+- **Learnings:**
+  - Schema uses `size` not `file_size`, `file_name` contains full path
+
+---
+
+## 2026-01-10 - US-009: eve analyze - Queue analysis jobs
+- Implemented `eve analyze` with --chat-id, --conversation-id, --contact
+- Queues convo-all-v1 analysis jobs to queue database
+- Files changed: cmd/eve/main.go
+
+---
+
+## 2026-01-10 - US-010: eve insights - Query analysis results
+- Implemented `eve insights` with topics/entities/emotions/humor subcommands
+- Shows summary counts or detailed breakdown
+- Added `queryInsights()` helper function
+- Files changed: cmd/eve/main.go
