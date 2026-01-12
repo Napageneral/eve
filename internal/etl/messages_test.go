@@ -291,6 +291,17 @@ func createTestWarehouseDBWithMessages(t *testing.T) *sql.DB {
 		t.Fatalf("Failed to create warehouse schema: %v", err)
 	}
 
+	// Seed chats so SyncMessages can map chat_identifier -> warehouse chat id.
+	_, err = db.Exec(`
+		INSERT INTO chats (id, chat_identifier, chat_name, is_group, service_name, created_date)
+		VALUES
+			(1, 'chat001', 'Alice', 0, 'iMessage', CURRENT_TIMESTAMP),
+			(2, 'chat002', 'Team Chat', 1, 'iMessage', CURRENT_TIMESTAMP)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to seed warehouse chats: %v", err)
+	}
+
 	return db
 }
 
@@ -599,6 +610,11 @@ func TestSyncMessages_Empty(t *testing.T) {
 			message_id INTEGER,
 			message_date INTEGER,
 			PRIMARY KEY (chat_id, message_id)
+		);
+
+		CREATE TABLE chat (
+			ROWID INTEGER PRIMARY KEY,
+			chat_identifier TEXT NOT NULL
 		);
 	`
 	_, err = db.Exec(schema)

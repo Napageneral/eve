@@ -19,7 +19,8 @@ type Message struct {
 	ServiceName           sql.NullString
 	AssociatedMessageGUID sql.NullString
 	ReplyToGUID           sql.NullString
-	ChatID                int64 // From chat_message_join
+	ChatID                int64  // Source chat ROWID from chat_message_join
+	ChatIdentifier         string // From chat.chat_identifier (not unique in chat.db)
 }
 
 // SyncMessages copies messages from chat.db to messages table in eve.db
@@ -73,9 +74,11 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 			m.service,
 			m.associated_message_guid,
 			m.reply_to_guid,
-			cmj.chat_id
+			cmj.chat_id,
+			c.chat_identifier
 		FROM message m
 		INNER JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+		INNER JOIN chat c ON c.ROWID = cmj.chat_id
 		WHERE m.ROWID > ?
 		ORDER BY m.ROWID
 	`
@@ -102,6 +105,7 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 			&msg.AssociatedMessageGUID,
 			&msg.ReplyToGUID,
 			&msg.ChatID,
+			&msg.ChatIdentifier,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
@@ -155,6 +159,18 @@ func insertMessage(tx *sql.Tx, msg *Message) error {
 		replyToGUID = &msg.ReplyToGUID.String
 	}
 
+	// IMPORTANT:
+	// chat.db can contain multiple chat rows with the same chat_identifier.
+	// Eve's warehouse schema currently enforces chats.chat_identifier as UNIQUE, which
+	// means only one "canonical" chat row exists in the warehouse for that identifier.
+	//
+	// Therefore, we must map source chat ROWID -> canonical warehouse chats.id
+	// via chat_identifier; otherwise messages can reference non-existent chats rows.
+	var warehouseChatID int64
+	if err := tx.QueryRow(`SELECT id FROM chats WHERE chat_identifier = ?`, msg.ChatIdentifier).Scan(&warehouseChatID); err != nil {
+		return fmt.Errorf("failed to map chat_identifier to warehouse chat id (chat_identifier=%q): %w", msg.ChatIdentifier, err)
+	}
+
 	// Insert into messages table
 	// Idempotent via guid UNIQUE constraint
 	query := `
@@ -171,6 +187,8 @@ func insertMessage(tx *sql.Tx, msg *Message) error {
 			reply_to_guid
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(guid) DO UPDATE SET
+			chat_id = excluded.chat_id,
+			sender_id = excluded.sender_id,
 			content = excluded.content,
 			timestamp = excluded.timestamp,
 			is_from_me = excluded.is_from_me,
@@ -181,7 +199,7 @@ func insertMessage(tx *sql.Tx, msg *Message) error {
 	`
 
 	if _, err := tx.Exec(query,
-		msg.ChatID,
+		warehouseChatID,
 		senderID,
 		content,
 		timestamp,

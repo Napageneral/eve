@@ -18,6 +18,7 @@ type SyncResult struct {
 // FullSync runs the complete ETL pipeline:
 // 1. Sync handles from chat.db to contacts + contact_identifiers
 // 2. Sync chats from chat.db to chats
+// 2b. Sync chat participants from chat.db to chat_participants
 // 3. Sync messages from chat.db to messages (incremental via watermark)
 // 4. Sync attachments from chat.db to attachments
 // 5. Build conversations from messages
@@ -44,6 +45,9 @@ func FullSync(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64) (*SyncResul
 		return nil, fmt.Errorf("chat sync failed: %w", err)
 	}
 	result.ChatsCount = chatsCount
+
+	// Step 2b: Sync chat participants (best-effort, but should normally succeed)
+	_, _ = SyncChatParticipants(chatDB, warehouseDB)
 
 	// Step 3: Sync messages (incremental via watermark)
 	messagesCount, err := SyncMessages(chatDB, warehouseDB, sinceRowID)

@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -300,6 +302,7 @@ For more: https://github.com/Napageneral/eve
 
 	// Sync command
 	var syncDryRun bool
+	var syncFull bool
 
 	syncCmd := &cobra.Command{
 		Use:   "sync",
@@ -334,12 +337,14 @@ For more: https://github.com/Napageneral/eve
 
 			// Get watermark for incremental sync
 			var sinceRowID int64 = 0
-			wm, err := etl.GetWatermark(warehouseDB, "chatdb", "message_rowid")
-			if err != nil {
-				return printErrorJSON(fmt.Errorf("failed to get watermark: %w", err))
-			}
-			if wm != nil && wm.ValueInt.Valid {
-				sinceRowID = wm.ValueInt.Int64
+			if !syncFull {
+				wm, err := etl.GetWatermark(warehouseDB, "chatdb", "message_rowid")
+				if err != nil {
+					return printErrorJSON(fmt.Errorf("failed to get watermark: %w", err))
+				}
+				if wm != nil && wm.ValueInt.Valid {
+					sinceRowID = wm.ValueInt.Int64
+				}
 			}
 
 			// If dry-run, only count messages
@@ -400,6 +405,7 @@ For more: https://github.com/Napageneral/eve
 			output := map[string]interface{}{
 				"ok":                  true,
 				"dry_run":             false,
+				"full":                syncFull,
 				"chat_db_path":        chatDBPath,
 				"handles_synced":      syncResult.HandlesCount,
 				"chats_synced":        syncResult.ChatsCount,
@@ -416,6 +422,7 @@ For more: https://github.com/Napageneral/eve
 	}
 
 	syncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false, "Count messages without updating watermark")
+	syncCmd.Flags().BoolVar(&syncFull, "full", false, "Force full resync (reprocess all messages; repairs orphan chat_ids and rebuilds conversations)")
 
 	// Compute command group
 	computeCmd := &cobra.Command{
@@ -3033,6 +3040,7 @@ For more: https://github.com/Napageneral/eve
 	var analyzeChatID int
 	var analyzeConvoID int
 	var analyzeContact string
+	var analyzeAutoCompute bool
 
 	analyzeCmd := &cobra.Command{
 		Use:   "analyze",
@@ -3119,18 +3127,36 @@ For more: https://github.com/Napageneral/eve
 				}
 			}
 
-			return printJSON(map[string]interface{}{
+			result := map[string]interface{}{
 				"ok":                  true,
 				"conversations_found": len(conversationIDs),
 				"jobs_enqueued":       enqueued,
-				"message":             "Run 'eve compute run' to process queued jobs",
-			})
+			}
+
+			// Auto-start daemon if requested and jobs were enqueued
+			if analyzeAutoCompute && enqueued > 0 {
+				pid, err := ensureDaemonRunning(cfg)
+				if err != nil {
+					result["daemon_error"] = err.Error()
+					result["message"] = "Jobs queued but failed to start daemon. Run 'eve daemon start' manually."
+				} else {
+					result["daemon_pid"] = pid
+					result["message"] = "Jobs queued and daemon is processing"
+				}
+			} else if enqueued > 0 {
+				result["message"] = "Run 'eve compute run' or 'eve daemon start' to process queued jobs"
+			} else {
+				result["message"] = "No new jobs to queue"
+			}
+
+			return printJSON(result)
 		},
 	}
 
 	analyzeCmd.Flags().IntVar(&analyzeChatID, "chat-id", 0, "Analyze all conversations in chat")
 	analyzeCmd.Flags().IntVar(&analyzeConvoID, "conversation-id", 0, "Analyze single conversation")
 	analyzeCmd.Flags().StringVar(&analyzeContact, "contact", "", "Analyze all conversations with contact")
+	analyzeCmd.Flags().BoolVar(&analyzeAutoCompute, "auto-compute", true, "Automatically start compute daemon if not running")
 
 	// Insights command - query analysis results
 	var insightsChatID int
@@ -3213,6 +3239,273 @@ For more: https://github.com/Napageneral/eve
 	insightsCmd.Flags().StringVar(&insightsContact, "contact", "", "Filter by contact name")
 	insightsCmd.Flags().StringVar(&insightsType, "type", "", "Insight type: topics, entities, emotions, humor")
 
+	// Daemon command - background compute processor
+	daemonCmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the background compute daemon",
+		Long:  "The daemon automatically processes queued analysis and embedding jobs.",
+	}
+
+	daemonStartCmd := &cobra.Command{
+		Use:   "start",
+		Short: "Start the background compute daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			// Check if already running
+			if pid, running := isDaemonRunning(cfg); running {
+				return printJSON(map[string]interface{}{
+					"ok":      true,
+					"status":  "already_running",
+					"pid":     pid,
+					"message": "Daemon is already running",
+				})
+			}
+
+			// Start daemon in background
+			exePath, err := os.Executable()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to get executable path: %w", err))
+			}
+
+			// Create log file
+			logPath := cfg.AppDir + "/daemon.log"
+			logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to create log file: %w", err))
+			}
+
+			// Start the compute process
+			daemonProc := exec.Command(exePath, "compute", "run", "--workers", "10", "--timeout", "0")
+			daemonProc.Stdout = logFile
+			daemonProc.Stderr = logFile
+			daemonProc.Env = os.Environ()
+
+			if err := daemonProc.Start(); err != nil {
+				logFile.Close()
+				return printErrorJSON(fmt.Errorf("failed to start daemon: %w", err))
+			}
+
+			// Write PID file
+			pidPath := cfg.AppDir + "/daemon.pid"
+			if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", daemonProc.Process.Pid)), 0644); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to write PID file: %w", err))
+			}
+
+			// Detach
+			logFile.Close()
+
+			return printJSON(map[string]interface{}{
+				"ok":       true,
+				"status":   "started",
+				"pid":      daemonProc.Process.Pid,
+				"log_path": logPath,
+				"message":  "Daemon started successfully",
+			})
+		},
+	}
+
+	daemonStopCmd := &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the background compute daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			pid, running := isDaemonRunning(cfg)
+			if !running {
+				return printJSON(map[string]interface{}{
+					"ok":      true,
+					"status":  "not_running",
+					"message": "Daemon is not running",
+				})
+			}
+
+			// Kill the process
+			process, err := os.FindProcess(pid)
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to find process: %w", err))
+			}
+
+			if err := process.Signal(syscall.SIGTERM); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to stop daemon: %w", err))
+			}
+
+			// Remove PID file
+			pidPath := cfg.AppDir + "/daemon.pid"
+			os.Remove(pidPath)
+
+			return printJSON(map[string]interface{}{
+				"ok":      true,
+				"status":  "stopped",
+				"pid":     pid,
+				"message": "Daemon stopped successfully",
+			})
+		},
+	}
+
+	daemonStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Check daemon status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			pid, running := isDaemonRunning(cfg)
+
+			if running {
+				// Get queue stats too
+				queueDB, err := sql.Open("sqlite3", cfg.QueueDBPath)
+				var queueStats map[string]interface{}
+				if err == nil {
+					q := queue.New(queueDB)
+					stats, statsErr := q.GetStats()
+					queueDB.Close()
+					if statsErr == nil {
+						queueStats = map[string]interface{}{
+							"pending":   stats.Pending,
+							"leased":    stats.Leased,
+							"succeeded": stats.Succeeded,
+							"failed":    stats.Failed,
+						}
+					}
+				}
+
+				return printJSON(map[string]interface{}{
+					"ok":      true,
+					"running": true,
+					"pid":     pid,
+					"queue":   queueStats,
+				})
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":      true,
+				"running": false,
+				"message": "Daemon is not running. Start with 'eve daemon start'",
+			})
+		},
+	}
+
+	// Launchd install/uninstall: robust "always running" daemon for macOS
+	var daemonInstallWorkers int
+	var daemonInstallStoreKey bool
+	var daemonInstallPrintOnly bool
+
+	daemonInstallCmd := &cobra.Command{
+		Use:   "install",
+		Short: "Install a macOS LaunchAgent to keep compute running",
+		Long: "Installs a user LaunchAgent (launchd) that runs:\n" +
+			"  eve compute run --workers <N> --timeout 0\n\n" +
+			"This is the most robust way to ensure compute automatically runs when jobs exist.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := config.Load()
+
+			if runtime.GOOS != "darwin" {
+				return printErrorJSON(fmt.Errorf("launchd install is only supported on macOS"))
+			}
+
+			exePath, err := os.Executable()
+			if err != nil {
+				return printErrorJSON(fmt.Errorf("failed to get executable path: %w", err))
+			}
+
+			if daemonInstallWorkers <= 0 {
+				daemonInstallWorkers = 10
+			}
+
+			plistPath, err := launchAgentPlistPath()
+			if err != nil {
+				return printErrorJSON(err)
+			}
+
+			// Optionally persist GEMINI_API_KEY to config.json so launchd doesn't depend on shell env.
+			storedKey := false
+			if daemonInstallStoreKey {
+				storedKey, err = ensureConfigHasGeminiAPIKey(cfg)
+				if err != nil {
+					return printErrorJSON(err)
+				}
+			}
+
+			plist := renderLaunchAgentPlist(launchAgentLabel(), exePath, daemonInstallWorkers, cfg.AppDir)
+
+			if daemonInstallPrintOnly {
+				return printJSON(map[string]interface{}{
+					"ok":           true,
+					"mode":         "print-only",
+					"plist_path":   plistPath,
+					"label":        launchAgentLabel(),
+					"workers":      daemonInstallWorkers,
+					"stored_key":   storedKey,
+					"plist":        plist,
+					"next_steps":   "Run without --print-only to install and start it",
+					"config_path":  cfg.ConfigPath,
+					"daemon_logs":  filepath.Join(cfg.AppDir, "launchd.log"),
+					"daemon_errs":  filepath.Join(cfg.AppDir, "launchd.err.log"),
+				})
+			}
+
+			if err := os.MkdirAll(filepath.Dir(plistPath), 0755); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to create LaunchAgents dir: %w", err))
+			}
+			if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to write plist: %w", err))
+			}
+
+			uid := os.Getuid()
+			if err := launchctlBootstrap(uid, plistPath); err != nil {
+				return printErrorJSON(fmt.Errorf("failed to load LaunchAgent: %w", err))
+			}
+
+			return printJSON(map[string]interface{}{
+				"ok":          true,
+				"status":      "installed",
+				"label":       launchAgentLabel(),
+				"plist_path":  plistPath,
+				"workers":     daemonInstallWorkers,
+				"stored_key":  storedKey,
+				"config_path": cfg.ConfigPath,
+				"logs": map[string]string{
+					"stdout": filepath.Join(cfg.AppDir, "launchd.log"),
+					"stderr": filepath.Join(cfg.AppDir, "launchd.err.log"),
+				},
+			})
+		},
+	}
+	daemonInstallCmd.Flags().IntVar(&daemonInstallWorkers, "workers", 10, "Compute workers to run under launchd")
+	daemonInstallCmd.Flags().BoolVar(&daemonInstallStoreKey, "store-key", false, "Persist GEMINI_API_KEY into Eve config.json so launchd can run without shell env")
+	daemonInstallCmd.Flags().BoolVar(&daemonInstallPrintOnly, "print-only", false, "Print the LaunchAgent plist instead of installing it")
+
+	daemonUninstallCmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Uninstall the macOS LaunchAgent",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if runtime.GOOS != "darwin" {
+				return printErrorJSON(fmt.Errorf("launchd uninstall is only supported on macOS"))
+			}
+			plistPath, err := launchAgentPlistPath()
+			if err != nil {
+				return printErrorJSON(err)
+			}
+
+			uid := os.Getuid()
+			_ = launchctlBootout(uid, plistPath) // ignore error; could already be unloaded
+			_ = os.Remove(plistPath)
+
+			return printJSON(map[string]interface{}{
+				"ok":         true,
+				"status":     "uninstalled",
+				"label":      launchAgentLabel(),
+				"plist_path": plistPath,
+			})
+		},
+	}
+
+	daemonCmd.AddCommand(daemonStartCmd)
+	daemonCmd.AddCommand(daemonStopCmd)
+	daemonCmd.AddCommand(daemonStatusCmd)
+	daemonCmd.AddCommand(daemonInstallCmd)
+	daemonCmd.AddCommand(daemonUninstallCmd)
+
 	rootCmd.AddCommand(helpCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(pathsCmd)
@@ -3235,6 +3528,7 @@ For more: https://github.com/Napageneral/eve
 	rootCmd.AddCommand(attachmentsCmd)
 	rootCmd.AddCommand(analyzeCmd)
 	rootCmd.AddCommand(insightsCmd)
+	rootCmd.AddCommand(daemonCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -3396,4 +3690,190 @@ func queryInsights(db *sql.DB, table, column string, chatID int) error {
 		"count":    len(insights),
 		"insights": insights,
 	})
+}
+
+// isDaemonRunning checks if the daemon is running by reading PID file and checking process
+func isDaemonRunning(cfg *config.Config) (int, bool) {
+	pidPath := cfg.AppDir + "/daemon.pid"
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0, false
+	}
+
+	var pid int
+	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
+		return 0, false
+	}
+
+	// Check if process exists
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return 0, false
+	}
+
+	// On Unix, FindProcess always succeeds, so we need to send signal 0 to check
+	err = process.Signal(syscall.Signal(0))
+	if err != nil {
+		// Process doesn't exist, clean up stale PID file
+		os.Remove(pidPath)
+		return 0, false
+	}
+
+	return pid, true
+}
+
+// ensureDaemonRunning starts the daemon if it's not already running
+func ensureDaemonRunning(cfg *config.Config) (int, error) {
+	if pid, running := isDaemonRunning(cfg); running {
+		return pid, nil
+	}
+
+	// Start daemon
+	exePath, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	// Create log file
+	logPath := cfg.AppDir + "/daemon.log"
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create log file: %w", err)
+	}
+
+	// Start the compute process
+	daemonProc := exec.Command(exePath, "compute", "run", "--workers", "10", "--timeout", "0")
+	daemonProc.Stdout = logFile
+	daemonProc.Stderr = logFile
+	daemonProc.Env = os.Environ()
+
+	if err := daemonProc.Start(); err != nil {
+		logFile.Close()
+		return 0, fmt.Errorf("failed to start daemon: %w", err)
+	}
+
+	// Write PID file
+	pidPath := cfg.AppDir + "/daemon.pid"
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", daemonProc.Process.Pid)), 0644); err != nil {
+		return 0, fmt.Errorf("failed to write PID file: %w", err)
+	}
+
+	logFile.Close()
+	return daemonProc.Process.Pid, nil
+}
+
+func launchAgentLabel() string {
+	return "com.napageneral.eve"
+}
+
+func launchAgentPlistPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve home dir: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel()+".plist"), nil
+}
+
+func renderLaunchAgentPlist(label, exePath string, workers int, appDir string) string {
+	stdoutPath := filepath.Join(appDir, "launchd.log")
+	stderrPath := filepath.Join(appDir, "launchd.err.log")
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>%s</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+    <string>compute</string>
+    <string>run</string>
+    <string>--workers</string>
+    <string>%d</string>
+    <string>--timeout</string>
+    <string>0</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
+</dict>
+</plist>
+`, label, exePath, workers, stdoutPath, stderrPath)
+}
+
+func launchctlBootstrap(uid int, plistPath string) error {
+	// Prefer modern launchctl (bootstrap gui/<uid>) for per-user LaunchAgents.
+	domain := fmt.Sprintf("gui/%d", uid)
+	cmd := exec.Command("launchctl", "bootstrap", domain, plistPath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// Fallback to legacy load -w
+	cmd2 := exec.Command("launchctl", "load", "-w", plistPath)
+	out2, err2 := cmd2.CombinedOutput()
+	if err2 != nil {
+		return fmt.Errorf("bootstrap failed: %v (%s); load failed: %v (%s)", err, strings.TrimSpace(string(out)), err2, strings.TrimSpace(string(out2)))
+	}
+	return nil
+}
+
+func launchctlBootout(uid int, plistPath string) error {
+	domain := fmt.Sprintf("gui/%d", uid)
+	cmd := exec.Command("launchctl", "bootout", domain, plistPath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// Fallback to legacy unload -w
+	cmd2 := exec.Command("launchctl", "unload", "-w", plistPath)
+	out2, err2 := cmd2.CombinedOutput()
+	if err2 != nil {
+		return fmt.Errorf("bootout failed: %v (%s); unload failed: %v (%s)", err, strings.TrimSpace(string(out)), err2, strings.TrimSpace(string(out2)))
+	}
+	return nil
+}
+
+func ensureConfigHasGeminiAPIKey(cfg *config.Config) (bool, error) {
+	// If GEMINI_API_KEY isn't set, we can't store it.
+	key := os.Getenv("GEMINI_API_KEY")
+	if key == "" {
+		return false, fmt.Errorf("GEMINI_API_KEY is not set; cannot --store-key")
+	}
+
+	// Read existing config.json (if any) as a generic object.
+	var obj map[string]interface{}
+	if data, err := os.ReadFile(cfg.ConfigPath); err == nil {
+		_ = json.Unmarshal(data, &obj)
+	}
+	if obj == nil {
+		obj = map[string]interface{}{}
+	}
+
+	// If already set, don't overwrite.
+	if existing, ok := obj["gemini_api_key"].(string); ok && existing != "" {
+		return false, nil
+	}
+
+	obj["gemini_api_key"] = key
+
+	if err := os.MkdirAll(filepath.Dir(cfg.ConfigPath), 0755); err != nil {
+		return false, fmt.Errorf("failed to create app dir: %w", err)
+	}
+	data, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(cfg.ConfigPath, data, 0600); err != nil {
+		return false, fmt.Errorf("failed to write config: %w", err)
+	}
+	return true, nil
 }
