@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS contact_identifiers (
     type TEXT NOT NULL, -- 'email' or 'phone'
     is_primary BOOLEAN DEFAULT 0,
     last_used TIMESTAMP,
-    FOREIGN KEY (contact_id) REFERENCES contacts(id)
+    FOREIGN KEY (contact_id) REFERENCES contacts(id),
+    UNIQUE(identifier, type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_contact_identifiers_contact ON contact_identifiers(contact_id);
