@@ -3,6 +3,7 @@ package imessage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -27,9 +28,9 @@ func Sync(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, opts SyncOptions
 		return nil, err
 	}
 
-	// Sync handles → persons/identities
+	// Sync handles → contacts
 	handlesStart := time.Now()
-	handlesSynced, handleMap, mePersonID, err := syncHandles(ctx, chatDB, commsDB, opts.MePersonID)
+	handlesSynced, handleMap, meContactID, err := syncHandles(ctx, chatDB, commsDB, opts.MeContactID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync handles: %w", err)
 	}
@@ -47,7 +48,7 @@ func Sync(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, opts SyncOptions
 
 	// Sync messages → events
 	messagesStart := time.Now()
-	messagesSynced, maxRowID, err := syncMessages(ctx, chatDB, commsDB, opts.SinceRowID, adapterName, handleMap, mePersonID)
+	messagesSynced, maxRowID, err := syncMessages(ctx, chatDB, commsDB, opts.SinceRowID, adapterName, handleMap, meContactID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync messages: %w", err)
 	}
@@ -55,10 +56,19 @@ func Sync(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, opts SyncOptions
 	result.MaxMessageRowID = maxRowID
 	result.Perf["messages"] = time.Since(messagesStart).String()
 
+	// Sync membership events → events with content_types=["membership"]
+	membershipStart := time.Now()
+	membershipSynced, err := syncMembershipEvents(ctx, chatDB, commsDB, opts.SinceRowID, adapterName, handleMap, meContactID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sync membership events: %w", err)
+	}
+	result.MembershipSynced = membershipSynced
+	result.Perf["membership"] = time.Since(membershipStart).String()
+
 	// Sync reactions → events with content_types=["reaction"]
 	// Must happen BEFORE attachments since some attachments belong to reaction messages
 	reactionsStart := time.Now()
-	reactionsSynced, err := syncReactions(ctx, chatDB, commsDB, opts.SinceRowID, adapterName, handleMap, mePersonID)
+	reactionsSynced, err := syncReactions(ctx, chatDB, commsDB, opts.SinceRowID, adapterName, handleMap, meContactID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync reactions: %w", err)
 	}
@@ -98,66 +108,60 @@ func setPragmas(db *sql.DB, full bool) error {
 	return nil
 }
 
-// syncHandles syncs handles from chat.db to comms persons/identities
-// Returns: count synced, handleID→personID map, mePersonID
-func syncHandles(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, existingMePersonID string) (int, map[int64]string, string, error) {
+// syncHandles syncs handles from chat.db to comms contacts.
+// Returns: count synced, handleID→contactID map, meContactID
+func syncHandles(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, existingMeContactID string) (int, map[int64]string, string, error) {
 	_ = ctx
 
-	// Get or create "me" person
-	mePersonID := existingMePersonID
-	if mePersonID == "" {
-		_ = commsDB.QueryRow("SELECT id FROM persons WHERE is_me = 1 LIMIT 1").Scan(&mePersonID)
-	}
-	if mePersonID == "" {
-		mePersonID = uuid.New().String()
-		now := time.Now().Unix()
-		_, err := commsDB.Exec(`
-			INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-			VALUES (?, ?, 1, ?, ?)
-		`, mePersonID, "Me", now, now)
-		if err != nil {
-			return 0, nil, "", fmt.Errorf("failed to create me person: %w", err)
+	// Get or create "me" contact
+	meContactID := existingMeContactID
+	if meContactID == "" {
+		meIdentifier := "imessage:me"
+		var contactID string
+		err := commsDB.QueryRow(`
+			SELECT contact_id FROM contact_identifiers
+			WHERE type = 'human' AND normalized = ?
+		`, meIdentifier).Scan(&contactID)
+		if err == nil && contactID != "" {
+			meContactID = contactID
+		} else if err != nil && err != sql.ErrNoRows {
+			return 0, nil, "", fmt.Errorf("failed to query me contact: %w", err)
+		} else {
+			meContactID = uuid.New().String()
+			now := time.Now().Unix()
+			if _, err := commsDB.Exec(`
+				INSERT INTO contacts (id, display_name, source, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?)
+			`, meContactID, "Me", "imessage", now, now); err != nil {
+				return 0, nil, "", fmt.Errorf("failed to create me contact: %w", err)
+			}
+			_, _ = commsDB.Exec(`
+				INSERT INTO contact_identifiers (id, contact_id, type, value, normalized, created_at, last_seen_at)
+				VALUES (?, ?, 'human', ?, ?, ?, ?)
+				ON CONFLICT(type, normalized) DO UPDATE SET last_seen_at = excluded.last_seen_at
+			`, uuid.New().String(), meContactID, meIdentifier, meIdentifier, now, now)
 		}
 	}
 
 	// Read handles from chat.db
 	handles, err := chatDB.GetHandles()
 	if err != nil {
-		return 0, nil, mePersonID, err
+		return 0, nil, meContactID, err
 	}
 
 	if len(handles) == 0 {
-		return 0, make(map[int64]string), mePersonID, nil
+		return 0, make(map[int64]string), meContactID, nil
 	}
 
 	// Bulk write in a single transaction
 	tx, err := commsDB.Begin()
 	if err != nil {
-		return 0, nil, mePersonID, fmt.Errorf("begin tx: %w", err)
+		return 0, nil, meContactID, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	stmtInsertPerson, err := tx.Prepare(`
-		INSERT INTO persons (id, canonical_name, is_me, created_at, updated_at)
-		VALUES (?, ?, 0, ?, ?)
-	`)
-	if err != nil {
-		return 0, nil, mePersonID, fmt.Errorf("prepare insert person: %w", err)
-	}
-	defer stmtInsertPerson.Close()
-
-	stmtInsertIdentity, err := tx.Prepare(`
-		INSERT INTO identities (id, person_id, channel, identifier, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(channel, identifier) DO NOTHING
-	`)
-	if err != nil {
-		return 0, nil, mePersonID, fmt.Errorf("prepare insert identity: %w", err)
-	}
-	defer stmtInsertIdentity.Close()
-
-	handleMap := make(map[int64]string) // chat.db handle ROWID → comms person_id
-	personsCreated := 0
+	handleMap := make(map[int64]string) // chat.db handle ROWID → comms contact_id
+	contactsCreated := 0
 
 	for _, handle := range handles {
 		normalized, identifierType := NormalizeIdentifier(handle.ID)
@@ -165,46 +169,41 @@ func syncHandles(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, existingM
 			continue
 		}
 
-		// For phone numbers, use E.164 format in identities table
-		identifier := normalized
-		if identifierType == "phone" {
-			identifier = NormalizePhoneE164(handle.ID)
+		var contactID string
+		err := tx.QueryRow(`
+			SELECT contact_id FROM contact_identifiers
+			WHERE type = ? AND normalized = ?
+		`, identifierType, normalized).Scan(&contactID)
+		if err != nil && err != sql.ErrNoRows {
+			return contactsCreated, handleMap, meContactID, fmt.Errorf("failed to query contact identifier: %w", err)
 		}
-
-		// Check if person already exists by identifier
-		var personID string
-		row := tx.QueryRow(`
-			SELECT person_id FROM identities
-			WHERE channel = ? AND identifier = ?
-		`, identifierType, identifier)
-		if err := row.Scan(&personID); err != nil && err != sql.ErrNoRows {
-			return personsCreated, handleMap, mePersonID, fmt.Errorf("failed to query identity: %w", err)
-		}
-
-		// If not found, create new person
-		if personID == "" {
-			personID = uuid.New().String()
+		if contactID == "" {
+			contactID = uuid.New().String()
 			now := time.Now().Unix()
-
-			// Use identifier as name initially
-			canonicalName := normalized
-			if _, err := stmtInsertPerson.Exec(personID, canonicalName, now, now); err == nil {
-				personsCreated++
+			if _, err := tx.Exec(`
+				INSERT INTO contacts (id, display_name, source, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?)
+			`, contactID, normalized, "imessage", now, now); err != nil {
+				return contactsCreated, handleMap, meContactID, fmt.Errorf("insert contact: %w", err)
 			}
-
-			// Create identity
-			identityID := uuid.New().String()
-			_, _ = stmtInsertIdentity.Exec(identityID, personID, identifierType, identifier, now)
+			if _, err := tx.Exec(`
+				INSERT INTO contact_identifiers (id, contact_id, type, value, normalized, created_at, last_seen_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(type, normalized) DO UPDATE SET last_seen_at = excluded.last_seen_at
+			`, uuid.New().String(), contactID, identifierType, handle.ID, normalized, now, now); err != nil {
+				return contactsCreated, handleMap, meContactID, fmt.Errorf("insert contact identifier: %w", err)
+			}
+			contactsCreated++
 		}
 
-		handleMap[handle.ROWID] = personID
+		handleMap[handle.ROWID] = contactID
 	}
 
 	if err := tx.Commit(); err != nil {
-		return personsCreated, handleMap, mePersonID, fmt.Errorf("commit tx: %w", err)
+		return contactsCreated, handleMap, meContactID, fmt.Errorf("commit tx: %w", err)
 	}
 
-	return personsCreated, handleMap, mePersonID, nil
+	return contactsCreated, handleMap, meContactID, nil
 }
 
 // syncChats syncs chats from chat.db to comms threads
@@ -274,7 +273,7 @@ func syncChats(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, adapterName
 }
 
 // syncMessages syncs messages from chat.db to comms events
-func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRowID int64, adapterName string, handleMap map[int64]string, mePersonID string) (int, int64, error) {
+func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRowID int64, adapterName string, handleMap map[int64]string, meContactID string) (int, int64, error) {
 	_ = ctx
 
 	messages, err := chatDB.GetMessages(sinceRowID)
@@ -293,10 +292,19 @@ func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRow
 	defer tx.Rollback()
 
 	stmtInsertEvent, err := tx.Prepare(`
-		INSERT OR IGNORE INTO events (
+		INSERT INTO events (
 			id, timestamp, channel, content_types, content,
-			direction, thread_id, reply_to, source_adapter, source_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			direction, thread_id, reply_to, source_adapter, source_id, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_adapter, source_id) DO UPDATE SET
+			channel = excluded.channel,
+			content_types = excluded.content_types,
+			content = excluded.content,
+			direction = excluded.direction,
+			thread_id = excluded.thread_id,
+			reply_to = excluded.reply_to,
+			metadata_json = excluded.metadata_json,
+			timestamp = excluded.timestamp
 	`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("prepare insert event: %w", err)
@@ -304,7 +312,7 @@ func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRow
 	defer stmtInsertEvent.Close()
 
 	stmtInsertParticipant, err := tx.Prepare(`
-		INSERT OR IGNORE INTO event_participants (event_id, person_id, role)
+		INSERT OR IGNORE INTO event_participants (event_id, contact_id, role)
 		VALUES (?, ?, ?)
 	`)
 	if err != nil {
@@ -322,6 +330,13 @@ func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRow
 	for _, msg := range messages {
 		if msg.ROWID > maxRowID {
 			maxRowID = msg.ROWID
+		}
+
+		if isMembershipMessage(msg) {
+			continue
+		}
+		if isReactionMessage(msg) {
+			continue
 		}
 
 		// Extract content
@@ -374,18 +389,18 @@ func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRow
 
 		// Add participants
 		if msg.HandleID.Valid {
-			if personID, ok := handleMap[msg.HandleID.Int64]; ok && personID != "" {
+			if contactID, ok := handleMap[msg.HandleID.Int64]; ok && contactID != "" {
 				role := "sender"
 				if msg.IsFromMe {
 					role = "recipient"
 				}
-				_, _ = stmtInsertParticipant.Exec(eventID, personID, role)
+				_, _ = stmtInsertParticipant.Exec(eventID, contactID, role)
 			}
 		}
-		if msg.IsFromMe && mePersonID != "" {
-			_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "sender")
-		} else if !msg.IsFromMe && mePersonID != "" {
-			_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "recipient")
+		if msg.IsFromMe && meContactID != "" {
+			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "sender")
+		} else if !msg.IsFromMe && meContactID != "" {
+			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "recipient")
 		}
 	}
 
@@ -476,6 +491,10 @@ func syncAttachments(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, since
 		if n, _ := res.RowsAffected(); n > 0 {
 			created++
 		}
+
+		if err := updateEventContentTypes(tx, eventID, mediaType); err != nil {
+			return created, fmt.Errorf("update event content types (event_id=%s): %w", eventID, err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -486,7 +505,7 @@ func syncAttachments(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, since
 }
 
 // syncReactions syncs reactions from chat.db to comms events
-func syncReactions(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRowID int64, adapterName string, handleMap map[int64]string, mePersonID string) (int, error) {
+func syncReactions(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRowID int64, adapterName string, handleMap map[int64]string, meContactID string) (int, error) {
 	_ = ctx
 
 	reactions, err := chatDB.GetReactions(sinceRowID)
@@ -516,7 +535,7 @@ func syncReactions(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRo
 	defer stmtInsertEvent.Close()
 
 	stmtInsertParticipant, err := tx.Prepare(`
-		INSERT OR IGNORE INTO event_participants (event_id, person_id, role)
+		INSERT OR IGNORE INTO event_participants (event_id, contact_id, role)
 		VALUES (?, ?, ?)
 	`)
 	if err != nil {
@@ -565,9 +584,28 @@ func syncReactions(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRo
 		// Event ID (deterministic)
 		eventID := adapterName + ":" + r.GUID
 
+		metadata := map[string]any{
+			"reaction_type":           r.ReactionType,
+			"associated_message_guid": originalGUID,
+			"associated_message_type": r.ReactionType,
+		}
+		if r.Text.Valid && r.Text.String != "" {
+			metadata["reaction_text"] = r.Text.String
+		}
+		if reactionContent != "" {
+			metadata["associated_message_emoji"] = reactionContent
+		}
+		if r.AssociatedMessageGUID != originalGUID {
+			metadata["associated_message_guid_raw"] = r.AssociatedMessageGUID
+		}
+		metadataJSON, err := json.Marshal(metadata)
+		if err != nil {
+			return created, fmt.Errorf("marshal reaction metadata: %w", err)
+		}
+
 		res, err := stmtInsertEvent.Exec(
 			eventID, timestamp, "imessage", contentTypesReaction, reactionContent,
-			direction, threadID, replyTo, adapterName, r.GUID,
+			direction, threadID, replyTo, adapterName, r.GUID, string(metadataJSON),
 		)
 		if err != nil {
 			return created, fmt.Errorf("insert reaction event: %w", err)
@@ -578,12 +616,12 @@ func syncReactions(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRo
 
 		// Add participants
 		if r.HandleID.Valid {
-			if personID, ok := handleMap[r.HandleID.Int64]; ok && personID != "" {
-				_, _ = stmtInsertParticipant.Exec(eventID, personID, "sender")
+			if contactID, ok := handleMap[r.HandleID.Int64]; ok && contactID != "" {
+				_, _ = stmtInsertParticipant.Exec(eventID, contactID, "sender")
 			}
 		}
-		if r.IsFromMe && mePersonID != "" {
-			_, _ = stmtInsertParticipant.Exec(eventID, mePersonID, "sender")
+		if r.IsFromMe && meContactID != "" {
+			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "sender")
 		}
 	}
 
@@ -592,4 +630,201 @@ func syncReactions(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRo
 	}
 
 	return created, nil
+}
+
+func syncMembershipEvents(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRowID int64, adapterName string, handleMap map[int64]string, meContactID string) (int, error) {
+	_ = ctx
+
+	messages, err := chatDB.GetMessages(sinceRowID)
+	if err != nil {
+		return 0, err
+	}
+	if len(messages) == 0 {
+		return 0, nil
+	}
+
+	tx, err := commsDB.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmtInsertEvent, err := tx.Prepare(`
+		INSERT INTO events (
+			id, timestamp, channel, content_types, content,
+			direction, thread_id, reply_to, source_adapter, source_id, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_adapter, source_id) DO UPDATE SET
+			channel = excluded.channel,
+			content_types = excluded.content_types,
+			content = excluded.content,
+			direction = excluded.direction,
+			thread_id = excluded.thread_id,
+			reply_to = excluded.reply_to,
+			metadata_json = excluded.metadata_json,
+			timestamp = excluded.timestamp
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare insert membership event: %w", err)
+	}
+	defer stmtInsertEvent.Close()
+
+	stmtInsertParticipant, err := tx.Prepare(`
+		INSERT OR IGNORE INTO event_participants (event_id, contact_id, role)
+		VALUES (?, ?, ?)
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare insert participant: %w", err)
+	}
+	defer stmtInsertParticipant.Close()
+
+	const contentTypesMembership = `["membership"]`
+
+	created := 0
+	for _, msg := range messages {
+		if !isMembershipMessage(msg) {
+			continue
+		}
+
+		action := mapGroupActionType(msg.GroupActionType.Int64)
+		content := ""
+		if action != "unknown" {
+			content = action
+		}
+
+		timestamp := AppleTimestampToUnix(msg.Date)
+		direction := "received"
+		if msg.IsFromMe {
+			direction = "sent"
+		}
+
+		threadID := adapterName + ":" + msg.ChatIdentifier
+		eventID := adapterName + ":" + msg.GUID
+
+		metadata := map[string]any{
+			"action":            action,
+			"group_action_type": msg.GroupActionType.Int64,
+		}
+		if msg.ItemType.Valid {
+			metadata["item_type"] = msg.ItemType.Int64
+		}
+		if msg.MessageActionType.Valid {
+			metadata["message_action_type"] = msg.MessageActionType.Int64
+		}
+		if msg.GroupTitle.Valid && msg.GroupTitle.String != "" {
+			metadata["group_title"] = msg.GroupTitle.String
+		}
+		if msg.OtherHandleID.Valid {
+			metadata["other_handle_id"] = msg.OtherHandleID.Int64
+			if contactID, ok := handleMap[msg.OtherHandleID.Int64]; ok && contactID != "" {
+				metadata["other_contact_id"] = contactID
+				_, _ = stmtInsertParticipant.Exec(eventID, contactID, "member")
+			}
+		}
+
+		metadataJSON, err := json.Marshal(metadata)
+		if err != nil {
+			return created, fmt.Errorf("marshal membership metadata: %w", err)
+		}
+
+		res, err := stmtInsertEvent.Exec(
+			eventID, timestamp, "imessage", contentTypesMembership, content,
+			direction, threadID, "", adapterName, msg.GUID, string(metadataJSON),
+		)
+		if err != nil {
+			return created, fmt.Errorf("insert membership event: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			created++
+		}
+
+		if msg.HandleID.Valid {
+			if contactID, ok := handleMap[msg.HandleID.Int64]; ok && contactID != "" {
+				_, _ = stmtInsertParticipant.Exec(eventID, contactID, "sender")
+			}
+		}
+		if msg.IsFromMe && meContactID != "" {
+			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "sender")
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return created, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return created, nil
+}
+
+func isMembershipMessage(msg Message) bool {
+	return msg.GroupActionType.Valid && msg.GroupActionType.Int64 != 0
+}
+
+func isReactionMessage(msg Message) bool {
+	if !msg.AssociatedMessageGUID.Valid || msg.AssociatedMessageGUID.String == "" {
+		return false
+	}
+	if msg.MessageType >= 2000 && msg.MessageType <= 2005 {
+		return true
+	}
+	if msg.Text.Valid && ReactionTextToEmoji(msg.Text.String) != "" {
+		return true
+	}
+	return false
+}
+
+func mapGroupActionType(actionType int64) string {
+	switch actionType {
+	case 1:
+		return "added"
+	case 3:
+		return "removed"
+	default:
+		return "unknown"
+	}
+}
+
+func updateEventContentTypes(tx *sql.Tx, eventID string, mediaType string) error {
+	if mediaType == "" {
+		return nil
+	}
+
+	var currentJSON string
+	err := tx.QueryRow(`SELECT content_types FROM events WHERE id = ?`, eventID).Scan(&currentJSON)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var types []string
+	if err := json.Unmarshal([]byte(currentJSON), &types); err != nil {
+		return nil
+	}
+
+	types = appendContentType(types, "attachment")
+	types = appendContentType(types, mediaType)
+
+	updatedJSON, err := json.Marshal(types)
+	if err != nil {
+		return err
+	}
+	if string(updatedJSON) == currentJSON {
+		return nil
+	}
+
+	_, err = tx.Exec(`UPDATE events SET content_types = ? WHERE id = ?`, string(updatedJSON), eventID)
+	return err
+}
+
+func appendContentType(existing []string, value string) []string {
+	if value == "" {
+		return existing
+	}
+	for _, item := range existing {
+		if item == value {
+			return existing
+		}
+	}
+	return append(existing, value)
 }

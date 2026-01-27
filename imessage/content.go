@@ -39,7 +39,7 @@ func NormalizeIdentifier(identifier string) (normalized string, typ string) {
 }
 
 // NormalizePhoneE164 normalizes phone numbers to E.164-ish format
-// Used for the Comms identities table
+// Legacy helper; prefer NormalizePhoneNumber for contact identifiers.
 func NormalizePhoneE164(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {

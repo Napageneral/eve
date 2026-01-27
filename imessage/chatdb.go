@@ -152,6 +152,11 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 			m.service,
 			m.associated_message_guid,
 			m.reply_to_guid,
+			m.group_action_type,
+			m.other_handle,
+			m.group_title,
+			m.item_type,
+			m.message_action_type,
 			cmj.chat_id,
 			c.chat_identifier
 		FROM message m
@@ -199,6 +204,11 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 			&msg.ServiceName,
 			&msg.AssociatedMessageGUID,
 			&msg.ReplyToGUID,
+			&msg.GroupActionType,
+			&msg.OtherHandleID,
+			&msg.GroupTitle,
+			&msg.ItemType,
+			&msg.MessageActionType,
 			&msg.ChatID,
 			&msg.ChatIdentifier,
 		); err != nil {

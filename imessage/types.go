@@ -12,6 +12,7 @@ type SyncResult struct {
 	HandlesSynced     int
 	ChatsSynced       int
 	MessagesSynced    int
+	MembershipSynced  int
 	AttachmentsSynced int
 	ReactionsSynced   int
 	MaxMessageRowID   int64
@@ -24,9 +25,9 @@ type SyncOptions struct {
 	// SinceRowID is the watermark for incremental sync (0 = full sync)
 	SinceRowID int64
 
-	// MePersonID is the comms person ID for the current user (optional)
+	// MeContactID is the comms contact ID for the current user (optional)
 	// If empty, we'll try to find/create one
-	MePersonID string
+	MeContactID string
 
 	// AdapterName is the source_adapter value to use (default: "imessage")
 	AdapterName string
@@ -71,6 +72,11 @@ type Message struct {
 	ReplyToGUID           sql.NullString
 	ChatID                int64
 	ChatIdentifier        string
+	GroupActionType       sql.NullInt64
+	OtherHandleID         sql.NullInt64
+	GroupTitle            sql.NullString
+	ItemType              sql.NullInt64
+	MessageActionType     sql.NullInt64
 }
 
 // Attachment represents an attachment from chat.db
@@ -98,6 +104,19 @@ type Reaction struct {
 	Text                  sql.NullString // "Loved ...", "Liked ...", etc. (modern format)
 	ChatID                int64
 	ChatIdentifier        string
+}
+
+// GroupAction represents a group membership change from chat.db
+type GroupAction struct {
+	GUID              string
+	ChatIdentifier    string
+	OtherHandleID     sql.NullInt64
+	ActionType        int
+	ItemType          sql.NullInt64
+	MessageActionType sql.NullInt64
+	GroupTitle        sql.NullString
+	Date              int64
+	IsFromMe          bool
 }
 
 // ChatParticipant represents a (chat_identifier, handle_id) link
