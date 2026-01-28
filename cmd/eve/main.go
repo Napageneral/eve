@@ -15,8 +15,6 @@ import (
 	"time"
 	"unsafe"
 
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/spf13/cobra"
 	"github.com/Napageneral/eve/internal/config"
 	"github.com/Napageneral/eve/internal/db"
 	"github.com/Napageneral/eve/internal/encoding"
@@ -26,6 +24,8 @@ import (
 	"github.com/Napageneral/eve/internal/migrate"
 	"github.com/Napageneral/eve/internal/queue"
 	"github.com/Napageneral/eve/internal/resources"
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/spf13/cobra"
 )
 
 var version = "0.1.0-dev"
@@ -410,6 +410,8 @@ For more: https://github.com/Napageneral/eve
 				"handles_synced":      syncResult.HandlesCount,
 				"chats_synced":        syncResult.ChatsCount,
 				"messages_synced":     syncResult.MessagesCount,
+				"reactions_synced":    syncResult.ReactionsCount,
+				"membership_synced":   syncResult.MembershipCount,
 				"attachments_synced":  syncResult.AttachmentsCount,
 				"conversations_built": syncResult.ConversationsCount,
 				"since_rowid":         sinceRowID,
@@ -3430,17 +3432,17 @@ For more: https://github.com/Napageneral/eve
 
 			if daemonInstallPrintOnly {
 				return printJSON(map[string]interface{}{
-					"ok":           true,
-					"mode":         "print-only",
-					"plist_path":   plistPath,
-					"label":        launchAgentLabel(),
-					"workers":      daemonInstallWorkers,
-					"stored_key":   storedKey,
-					"plist":        plist,
-					"next_steps":   "Run without --print-only to install and start it",
-					"config_path":  cfg.ConfigPath,
-					"daemon_logs":  filepath.Join(cfg.AppDir, "launchd.log"),
-					"daemon_errs":  filepath.Join(cfg.AppDir, "launchd.err.log"),
+					"ok":          true,
+					"mode":        "print-only",
+					"plist_path":  plistPath,
+					"label":       launchAgentLabel(),
+					"workers":     daemonInstallWorkers,
+					"stored_key":  storedKey,
+					"plist":       plist,
+					"next_steps":  "Run without --print-only to install and start it",
+					"config_path": cfg.ConfigPath,
+					"daemon_logs": filepath.Join(cfg.AppDir, "launchd.log"),
+					"daemon_errs": filepath.Join(cfg.AppDir, "launchd.err.log"),
 				})
 			}
 

@@ -46,7 +46,12 @@ func createTestChatDBWithMessages(t *testing.T) string {
 			type INTEGER DEFAULT 0,
 			service TEXT,
 			associated_message_guid TEXT,
-			reply_to_guid TEXT
+			reply_to_guid TEXT,
+			group_action_type INTEGER,
+			other_handle INTEGER,
+			group_title TEXT,
+			item_type INTEGER,
+			message_action_type INTEGER
 		);
 
 		CREATE TABLE chat_message_join (
@@ -120,8 +125,8 @@ func createTestChatDBWithMessages(t *testing.T) string {
 		chatID                int64
 	}{
 		{
-			guid:     "msg-001",
-			text:     "Hello, how are you?",
+			guid: "msg-001",
+			text: "Hello, how are you?",
 			// attributedBody is present in real chat.db but omitted here for simplicity
 			handleID: ptr(int64(1)),
 			date:     toAppleNano(baseTime),
@@ -131,8 +136,8 @@ func createTestChatDBWithMessages(t *testing.T) string {
 			chatID:   1,
 		},
 		{
-			guid:     "msg-002",
-			text:     "I'm doing great, thanks!",
+			guid: "msg-002",
+			text: "I'm doing great, thanks!",
 			// is_from_me, so no handle_id
 			handleID: nil, // is_from_me, so no handle_id
 			date:     toAppleNano(baseTime.Add(1 * time.Minute)),
@@ -163,8 +168,8 @@ func createTestChatDBWithMessages(t *testing.T) string {
 			chatID:      2,
 		},
 		{
-			guid:     "msg-005",
-			text:     "", // Empty message (e.g., reaction or attachment only)
+			guid: "msg-005",
+			text: "", // Empty message (e.g., reaction or attachment only)
 			// No attributedBody => should remain empty after ETL
 			handleID: ptr(int64(1)),
 			date:     toAppleNano(baseTime.Add(3 * time.Hour)),
@@ -603,7 +608,12 @@ func TestSyncMessages_Empty(t *testing.T) {
 			type INTEGER,
 			service TEXT,
 			associated_message_guid TEXT,
-			reply_to_guid TEXT
+			reply_to_guid TEXT,
+			group_action_type INTEGER,
+			other_handle INTEGER,
+			group_title TEXT,
+			item_type INTEGER,
+			message_action_type INTEGER
 		);
 		CREATE TABLE chat_message_join (
 			chat_id INTEGER,

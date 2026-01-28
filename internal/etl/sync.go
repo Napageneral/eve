@@ -10,6 +10,8 @@ type SyncResult struct {
 	HandlesCount       int
 	ChatsCount         int
 	MessagesCount      int
+	ReactionsCount     int
+	MembershipCount    int
 	AttachmentsCount   int
 	ConversationsCount int
 	MaxMessageRowID    int64
@@ -56,21 +58,35 @@ func FullSync(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64) (*SyncResul
 	}
 	result.MessagesCount = messagesCount
 
-	// Step 4: Sync attachments (requires messages to exist first)
+	// Step 4: Sync reactions (requires messages to exist first)
+	reactionsCount, err := SyncReactions(chatDB, warehouseDB, sinceRowID)
+	if err != nil {
+		return nil, fmt.Errorf("reaction sync failed: %w", err)
+	}
+	result.ReactionsCount = reactionsCount
+
+	// Step 4b: Sync membership events (requires messages to exist first)
+	membershipCount, err := SyncMembershipEvents(chatDB, warehouseDB, sinceRowID)
+	if err != nil {
+		return nil, fmt.Errorf("membership sync failed: %w", err)
+	}
+	result.MembershipCount = membershipCount
+
+	// Step 5: Sync attachments (requires messages to exist first)
 	attachmentsCount, err := SyncAttachments(chatDB, warehouseDB)
 	if err != nil {
 		return nil, fmt.Errorf("attachment sync failed: %w", err)
 	}
 	result.AttachmentsCount = attachmentsCount
 
-	// Step 5: Build conversations from messages
+	// Step 6: Build conversations from messages
 	conversationsCount, err := BuildConversations(warehouseDB)
 	if err != nil {
 		return nil, fmt.Errorf("conversation building failed: %w", err)
 	}
 	result.ConversationsCount = conversationsCount
 
-	// Step 6: Get max message ROWID for watermark update
+	// Step 7: Get max message ROWID for watermark update
 	maxRowID, err := chatDB.GetMaxMessageRowID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get max message ROWID: %w", err)

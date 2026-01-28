@@ -20,7 +20,7 @@ type Message struct {
 	AssociatedMessageGUID sql.NullString
 	ReplyToGUID           sql.NullString
 	ChatID                int64  // Source chat ROWID from chat_message_join
-	ChatIdentifier         string // From chat.chat_identifier (not unique in chat.db)
+	ChatIdentifier        string // From chat.chat_identifier (not unique in chat.db)
 }
 
 // SyncMessages copies messages from chat.db to messages table in eve.db
@@ -80,6 +80,24 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 		INNER JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
 		INNER JOIN chat c ON c.ROWID = cmj.chat_id
 		WHERE m.ROWID > ?
+		  AND (m.type < 2000 OR m.type > 2005 OR m.type IS NULL)
+		  AND NOT (
+		    -- Exclude modern text-based reactions (Loved, Liked, etc.)
+		    m.type = 0
+		    AND m.associated_message_guid IS NOT NULL
+		    AND m.associated_message_guid != ''
+		    AND m.text IS NOT NULL
+		    AND m.text != ''
+		    AND (
+		      m.text LIKE 'Loved %' OR
+		      m.text LIKE 'Liked %' OR
+		      m.text LIKE 'Disliked %' OR
+		      m.text LIKE 'Laughed at %' OR
+		      m.text LIKE 'Emphasized %' OR
+		      m.text LIKE 'Questioned %'
+		    )
+		  )
+		  AND (m.group_action_type IS NULL OR m.group_action_type = 0)
 		ORDER BY m.ROWID
 	`
 
