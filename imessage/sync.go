@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -738,11 +737,18 @@ func syncMembershipEvents(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, 
 		if msg.GroupTitle.Valid && msg.GroupTitle.String != "" {
 			metadata["group_title"] = msg.GroupTitle.String
 		}
-		if msg.OtherHandleID.Valid {
+		// Handle participants for membership events
+		// When handle_id=0, it means "me" is the one being added/removed,
+		// and other_handle is the actor doing the action
+		isAboutMe := !msg.HandleID.Valid || msg.HandleID.Int64 == 0
+		
+		// Store other_contact_id in metadata for later lookup
+		var otherContactID string
+		if msg.OtherHandleID.Valid && msg.OtherHandleID.Int64 != 0 {
 			metadata["other_handle_id"] = msg.OtherHandleID.Int64
 			if contactID, ok := handleMap[msg.OtherHandleID.Int64]; ok && contactID != "" {
 				metadata["other_contact_id"] = contactID
-				_, _ = stmtInsertParticipant.Exec(eventID, contactID, "member")
+				otherContactID = contactID
 			}
 		}
 
@@ -762,13 +768,27 @@ func syncMembershipEvents(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, 
 			created++
 		}
 
-		if msg.HandleID.Valid {
+		// Add participants AFTER the event is inserted
+		if otherContactID != "" {
+			if isAboutMe {
+				// other_handle is the actor when handle_id=0
+				_, _ = stmtInsertParticipant.Exec(eventID, otherContactID, "sender")
+			} else {
+				// other_handle is the member being added/removed
+				_, _ = stmtInsertParticipant.Exec(eventID, otherContactID, "member")
+			}
+		}
+		
+		if isAboutMe && meContactID != "" {
+			// "me" is the member being added/removed
+			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "member")
+		}
+
+		// When handle_id is valid and not 0, it's the actor/sender
+		if msg.HandleID.Valid && msg.HandleID.Int64 != 0 {
 			if contactID, ok := handleMap[msg.HandleID.Int64]; ok && contactID != "" {
 				_, _ = stmtInsertParticipant.Exec(eventID, contactID, "sender")
 			}
-		}
-		if msg.IsFromMe && meContactID != "" {
-			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "sender")
 		}
 	}
 
@@ -856,12 +876,18 @@ func appendContentType(existing []string, value string) []string {
 // createPlaceholderContact creates a contact for a handle that wasn't in handleMap.
 // This can happen when a handle was deleted from chat.db or had an invalid identifier.
 func createPlaceholderContact(tx *sql.Tx, handleRowID int64, chatDB *ChatDB) string {
+	// Handle ROWID 0 is special - it means "me" (sent by local user)
+	// Don't create a contact for it
+	if handleRowID == 0 {
+		return ""
+	}
+
 	// Try to look up the handle from chat.db
 	var handleID string
 	err := chatDB.db.QueryRow(`SELECT id FROM handle WHERE ROWID = ?`, handleRowID).Scan(&handleID)
 	if err != nil {
-		// Handle not found - create a placeholder with the ROWID
-		handleID = fmt.Sprintf("unknown-handle-%d", handleRowID)
+		// Handle not found - we can't create a meaningful contact
+		return ""
 	}
 
 	// Determine identifier type and normalize
@@ -887,9 +913,6 @@ func createPlaceholderContact(tx *sql.Tx, handleRowID int64, chatDB *ChatDB) str
 
 	// Use normalized as display name (shows phone/email)
 	displayName := normalized
-	if identifierType == "handle" && strings.HasPrefix(normalized, "unknown-handle-") {
-		displayName = "Unknown Contact"
-	}
 
 	_, err = tx.Exec(`
 		INSERT INTO contacts (id, display_name, source, created_at, updated_at)
