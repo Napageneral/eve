@@ -105,9 +105,14 @@ func SyncMembershipEvents(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64)
 		return 0, err
 	}
 
+	handleMap, err := loadWarehouseHandleMap(tx, chatDB)
+	if err != nil {
+		return 0, err
+	}
+
 	created := 0
 	for _, action := range actions {
-		if err := insertMembershipEvent(tx, chatMap, &action); err != nil {
+		if err := insertMembershipEvent(tx, chatMap, handleMap, &action); err != nil {
 			return 0, fmt.Errorf("failed to insert membership event %d: %w", action.ROWID, err)
 		}
 		created++
@@ -120,7 +125,7 @@ func SyncMembershipEvents(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64)
 	return created, nil
 }
 
-func insertMembershipEvent(tx *sql.Tx, chatMap map[string]int64, action *GroupAction) error {
+func insertMembershipEvent(tx *sql.Tx, chatMap map[string]int64, handleMap map[int64]int64, action *GroupAction) error {
 	warehouseChatID, ok := chatMap[action.ChatIdentifier]
 	if !ok {
 		return fmt.Errorf("failed to map chat_identifier to warehouse chat id (chat_identifier=%q)", action.ChatIdentifier)
@@ -130,14 +135,34 @@ func insertMembershipEvent(tx *sql.Tx, chatMap map[string]int64, action *GroupAc
 	appleEpoch := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
 	timestamp := appleEpoch.Add(time.Duration(action.Date) * time.Nanosecond)
 
-	var actorID *int64
-	if action.HandleID.Valid && action.HandleID.Int64 > 0 {
-		actorID = &action.HandleID.Int64
+	resolveContactID := func(handleID sql.NullInt64) *int64 {
+		if !handleID.Valid || handleID.Int64 <= 0 {
+			return nil
+		}
+		if contactID, ok := handleMap[handleID.Int64]; ok {
+			return &contactID
+		}
+		return nil
 	}
 
+	var actorID *int64
 	var memberID *int64
-	if action.OtherHandleID.Valid && action.OtherHandleID.Int64 > 0 {
-		memberID = &action.OtherHandleID.Int64
+	handleID := int64(0)
+	if action.HandleID.Valid {
+		handleID = action.HandleID.Int64
+	}
+
+	if handleID == 0 {
+		if action.IsFromMe {
+			// "Me" performed the action, member is other_handle.
+			memberID = resolveContactID(action.OtherHandleID)
+		} else {
+			// "Me" is the member, actor is other_handle.
+			actorID = resolveContactID(action.OtherHandleID)
+		}
+	} else {
+		actorID = resolveContactID(action.HandleID)
+		memberID = resolveContactID(action.OtherHandleID)
 	}
 
 	groupTitle := ""
@@ -186,6 +211,37 @@ func insertMembershipEvent(tx *sql.Tx, chatMap map[string]int64, action *GroupAc
 	}
 
 	return nil
+}
+
+func loadWarehouseHandleMap(tx *sql.Tx, chatDB *ChatDB) (map[int64]int64, error) {
+	handles, err := chatDB.GetHandles()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read handles: %w", err)
+	}
+
+	stmt, err := tx.Prepare(`
+		SELECT contact_id
+		FROM contact_identifiers
+		WHERE identifier = ? AND type = ?
+		LIMIT 1
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare handle lookup: %w", err)
+	}
+	defer stmt.Close()
+
+	handleMap := make(map[int64]int64, len(handles))
+	for _, handle := range handles {
+		normalized, identifierType := normalizeIdentifier(handle.ID)
+		if normalized == "" {
+			continue
+		}
+		var contactID int64
+		if err := stmt.QueryRow(normalized, identifierType).Scan(&contactID); err == nil {
+			handleMap[handle.ROWID] = contactID
+		}
+	}
+	return handleMap, nil
 }
 
 func nullInt64(val sql.NullInt64) interface{} {
