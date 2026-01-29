@@ -233,10 +233,11 @@ func syncChats(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, adapterName
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO threads (id, channel, name, source_adapter, source_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO threads (id, channel, name, is_group, source_adapter, source_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_adapter, source_id) DO UPDATE SET
 			name = excluded.name,
+			is_group = excluded.is_group,
 			updated_at = excluded.updated_at
 	`)
 	if err != nil {
@@ -251,6 +252,12 @@ func syncChats(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, adapterName
 			threadName = chat.DisplayName.String
 		}
 
+		// Apple style: 43 = group chat, 45 = 1:1
+		isGroup := 0
+		if chat.Style == 43 {
+			isGroup = 1
+		}
+
 		// Deterministic thread ID
 		threadID := adapterName + ":" + chat.ChatIdentifier
 		now := time.Now().Unix()
@@ -259,6 +266,7 @@ func syncChats(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, adapterName
 			threadID,
 			"imessage",
 			threadName,
+			isGroup,
 			adapterName,
 			chat.ChatIdentifier,
 			now,
@@ -385,7 +393,7 @@ func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRow
 
 		res, err := stmtInsertEvent.Exec(
 			eventID, timestamp, "imessage", contentTypesJSON, content,
-			direction, threadID, replyTo, adapterName, msg.GUID,
+			direction, threadID, replyTo, adapterName, msg.GUID, nil,
 		)
 		if err != nil {
 			return created, maxRowID, fmt.Errorf("insert event: %w", err)
