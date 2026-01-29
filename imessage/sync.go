@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -165,7 +166,13 @@ func syncHandles(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, existingM
 
 	for _, handle := range handles {
 		normalized, identifierType := NormalizeIdentifier(handle.ID)
+		// Don't skip handles with empty normalized - use raw ID as fallback
 		if normalized == "" {
+			normalized = handle.ID
+			identifierType = "handle"
+		}
+		if normalized == "" {
+			// Only skip if both normalized and raw ID are empty
 			continue
 		}
 
@@ -389,7 +396,16 @@ func syncMessages(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, sinceRow
 
 		// Add participants
 		if msg.HandleID.Valid {
-			if contactID, ok := handleMap[msg.HandleID.Int64]; ok && contactID != "" {
+			contactID, ok := handleMap[msg.HandleID.Int64]
+			if !ok || contactID == "" {
+				// Handle not in map - try to create a placeholder contact
+				// This can happen if the handle was deleted or had an invalid identifier
+				contactID = createPlaceholderContact(tx, msg.HandleID.Int64, chatDB)
+				if contactID != "" {
+					handleMap[msg.HandleID.Int64] = contactID
+				}
+			}
+			if contactID != "" {
 				role := "sender"
 				if msg.IsFromMe {
 					role = "recipient"
@@ -827,4 +843,62 @@ func appendContentType(existing []string, value string) []string {
 		}
 	}
 	return append(existing, value)
+}
+
+// createPlaceholderContact creates a contact for a handle that wasn't in handleMap.
+// This can happen when a handle was deleted from chat.db or had an invalid identifier.
+func createPlaceholderContact(tx *sql.Tx, handleRowID int64, chatDB *ChatDB) string {
+	// Try to look up the handle from chat.db
+	var handleID string
+	err := chatDB.db.QueryRow(`SELECT id FROM handle WHERE ROWID = ?`, handleRowID).Scan(&handleID)
+	if err != nil {
+		// Handle not found - create a placeholder with the ROWID
+		handleID = fmt.Sprintf("unknown-handle-%d", handleRowID)
+	}
+
+	// Determine identifier type and normalize
+	normalized, identifierType := NormalizeIdentifier(handleID)
+	if normalized == "" {
+		normalized = handleID
+		identifierType = "handle"
+	}
+
+	// Check if contact already exists
+	var existingContactID string
+	err = tx.QueryRow(`
+		SELECT contact_id FROM contact_identifiers
+		WHERE type = ? AND normalized = ?
+	`, identifierType, normalized).Scan(&existingContactID)
+	if err == nil && existingContactID != "" {
+		return existingContactID
+	}
+
+	// Create new contact
+	contactID := uuid.New().String()
+	now := time.Now().Unix()
+
+	// Use normalized as display name (shows phone/email)
+	displayName := normalized
+	if identifierType == "handle" && strings.HasPrefix(normalized, "unknown-handle-") {
+		displayName = "Unknown Contact"
+	}
+
+	_, err = tx.Exec(`
+		INSERT INTO contacts (id, display_name, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, contactID, displayName, "imessage", now, now)
+	if err != nil {
+		return ""
+	}
+
+	_, err = tx.Exec(`
+		INSERT INTO contact_identifiers (id, contact_id, type, value, normalized, created_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(type, normalized) DO UPDATE SET last_seen_at = excluded.last_seen_at
+	`, uuid.New().String(), contactID, identifierType, handleID, normalized, now, now)
+	if err != nil {
+		return ""
+	}
+
+	return contactID
 }
