@@ -118,6 +118,12 @@ func cleanMessageContent(content string) string {
 	// Trim space and also trim stray null bytes if any made it through
 	cleaned = strings.TrimSpace(cleaned)
 	cleaned = string(bytes.Trim(cleanedAsBytes(cleaned), "\x00"))
+	if strings.HasPrefix(cleaned, "=") && len(cleaned) > 1 {
+		next := []rune(cleaned[1:])
+		if len(next) > 0 && unicode.IsLetter(next[0]) {
+			cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, "="))
+		}
+	}
 	return cleaned
 }
 
@@ -128,4 +134,3 @@ func cleanedAsBytes(s string) []byte {
 	}
 	return []byte(s)
 }
-

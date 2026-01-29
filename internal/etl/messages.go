@@ -44,9 +44,14 @@ func SyncMessages(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64) (int, e
 	}
 	defer tx.Rollback()
 
+	handleMap, err := loadWarehouseHandleMap(tx, chatDB)
+	if err != nil {
+		return 0, err
+	}
+
 	// Insert messages
 	for _, msg := range messages {
-		if err := insertMessage(tx, &msg); err != nil {
+		if err := insertMessage(tx, &msg, handleMap); err != nil {
 			return 0, fmt.Errorf("failed to insert message %d: %w", msg.ROWID, err)
 		}
 	}
@@ -140,7 +145,7 @@ func (c *ChatDB) GetMessages(sinceRowID int64) ([]Message, error) {
 // insertMessage inserts a message into the messages table
 // Converts Apple timestamp to Unix timestamp
 // Maps handle_id to sender_id (contact foreign key)
-func insertMessage(tx *sql.Tx, msg *Message) error {
+func insertMessage(tx *sql.Tx, msg *Message, handleMap map[int64]int64) error {
 	// Convert Apple timestamp to Go time
 	// Apple epoch: 2001-01-01 00:00:00 UTC
 	appleEpoch := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -158,8 +163,9 @@ func insertMessage(tx *sql.Tx, msg *Message) error {
 
 	var senderID *int64
 	if msg.HandleID.Valid && msg.HandleID.Int64 > 0 {
-		// handle_id from chat.db maps to contact_id in eve.db
-		senderID = &msg.HandleID.Int64
+		if contactID, ok := handleMap[msg.HandleID.Int64]; ok {
+			senderID = &contactID
+		}
 	}
 
 	serviceName := ""
