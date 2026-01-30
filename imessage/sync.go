@@ -741,7 +741,7 @@ func syncMembershipEvents(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, 
 		// When handle_id=0, it means "me" is the one being added/removed,
 		// and other_handle is the actor doing the action
 		isAboutMe := !msg.HandleID.Valid || msg.HandleID.Int64 == 0
-		
+
 		// Store other_contact_id in metadata for later lookup
 		var otherContactID string
 		if msg.OtherHandleID.Valid && msg.OtherHandleID.Int64 != 0 {
@@ -778,7 +778,7 @@ func syncMembershipEvents(ctx context.Context, chatDB *ChatDB, commsDB *sql.DB, 
 				_, _ = stmtInsertParticipant.Exec(eventID, otherContactID, "member")
 			}
 		}
-		
+
 		if isAboutMe && meContactID != "" {
 			// "me" is the member being added/removed
 			_, _ = stmtInsertParticipant.Exec(eventID, meContactID, "member")
@@ -819,9 +819,9 @@ func isReactionMessage(msg Message) bool {
 func mapGroupActionType(actionType int64) string {
 	switch actionType {
 	case 1:
-		return "added"
-	case 3:
 		return "removed"
+	case 3:
+		return "added"
 	default:
 		return "unknown"
 	}

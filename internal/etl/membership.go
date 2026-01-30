@@ -110,9 +110,14 @@ func SyncMembershipEvents(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64)
 		return 0, err
 	}
 
+	meContactID, err := loadWarehouseMeContactID(tx)
+	if err != nil {
+		return 0, err
+	}
+
 	created := 0
 	for _, action := range actions {
-		if err := insertMembershipEvent(tx, chatMap, handleMap, &action); err != nil {
+		if err := insertMembershipEvent(tx, chatMap, handleMap, meContactID, &action); err != nil {
 			return 0, fmt.Errorf("failed to insert membership event %d: %w", action.ROWID, err)
 		}
 		created++
@@ -125,7 +130,7 @@ func SyncMembershipEvents(chatDB *ChatDB, warehouseDB *sql.DB, sinceRowID int64)
 	return created, nil
 }
 
-func insertMembershipEvent(tx *sql.Tx, chatMap map[string]int64, handleMap map[int64]int64, action *GroupAction) error {
+func insertMembershipEvent(tx *sql.Tx, chatMap map[string]int64, handleMap map[int64]int64, meContactID *int64, action *GroupAction) error {
 	warehouseChatID, ok := chatMap[action.ChatIdentifier]
 	if !ok {
 		return fmt.Errorf("failed to map chat_identifier to warehouse chat id (chat_identifier=%q)", action.ChatIdentifier)
@@ -163,6 +168,12 @@ func insertMembershipEvent(tx *sql.Tx, chatMap map[string]int64, handleMap map[i
 	} else {
 		actorID = resolveContactID(action.HandleID)
 		memberID = resolveContactID(action.OtherHandleID)
+	}
+
+	if memberID == nil && meContactID != nil {
+		if !action.OtherHandleID.Valid || action.OtherHandleID.Int64 == 0 {
+			memberID = meContactID
+		}
 	}
 
 	groupTitle := ""
@@ -242,6 +253,21 @@ func loadWarehouseHandleMap(tx *sql.Tx, chatDB *ChatDB) (map[int64]int64, error)
 		}
 	}
 	return handleMap, nil
+}
+
+func loadWarehouseMeContactID(tx *sql.Tx) (*int64, error) {
+	var id sql.NullInt64
+	if err := tx.QueryRow(`SELECT id FROM contacts WHERE is_me = 1 LIMIT 1`).Scan(&id); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query me contact: %w", err)
+	}
+	if !id.Valid {
+		return nil, nil
+	}
+	contactID := id.Int64
+	return &contactID, nil
 }
 
 func nullInt64(val sql.NullInt64) interface{} {
