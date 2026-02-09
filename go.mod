@@ -6,6 +6,7 @@ require (
 	github.com/Napageneral/taskengine v0.0.0
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.33
+	github.com/nexus-project/adapter-sdk-go v0.0.0
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -16,3 +17,5 @@ require (
 )
 
 replace github.com/Napageneral/taskengine => ../taskengine
+
+replace github.com/nexus-project/adapter-sdk-go => ../nexus/nexus-adapter-sdk-go

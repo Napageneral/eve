@@ -3,6 +3,8 @@
 
 # Build output
 /bin/
+/eve
+/eve-adapter
 *.exe
 
 # Databases / runtime state

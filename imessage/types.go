@@ -1,40 +1,7 @@
-// Package imessage provides direct access to Apple's iMessage chat.db
-// and sync capabilities to write into a Comms-compatible database schema.
+// Package imessage provides direct read-only access to Apple's iMessage chat.db.
 package imessage
 
-import (
-	"database/sql"
-	"time"
-)
-
-// SyncResult contains statistics from a sync operation
-type SyncResult struct {
-	HandlesSynced     int
-	ChatsSynced       int
-	MessagesSynced    int
-	MembershipSynced  int
-	AttachmentsSynced int
-	ReactionsSynced   int
-	MaxMessageRowID   int64
-	Duration          time.Duration
-	Perf              map[string]string
-}
-
-// SyncOptions configures sync behavior
-type SyncOptions struct {
-	// SinceRowID is the watermark for incremental sync (0 = full sync)
-	SinceRowID int64
-
-	// MeContactID is the comms contact ID for the current user (optional)
-	// If empty, we'll try to find/create one
-	MeContactID string
-
-	// AdapterName is the source_adapter value to use (default: "imessage")
-	AdapterName string
-
-	// Full enables aggressive SQLite pragmas for bulk import
-	Full bool
-}
+import "database/sql"
 
 // ChatDB provides read-only access to Apple's chat.db
 type ChatDB struct {
@@ -123,57 +90,4 @@ type GroupAction struct {
 type ChatParticipant struct {
 	ChatIdentifier string
 	HandleID       int64
-}
-
-// AppleEpoch is the reference point for Apple timestamps (2001-01-01 00:00:00 UTC)
-var AppleEpoch = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
-
-// AppleTimestampToUnix converts Apple nanosecond timestamp to Unix seconds
-func AppleTimestampToUnix(appleNanos int64) int64 {
-	t := AppleEpoch.Add(time.Duration(appleNanos) * time.Nanosecond)
-	return t.Unix()
-}
-
-// ReactionTypeToEmoji converts iMessage reaction type to emoji
-func ReactionTypeToEmoji(reactionType int) string {
-	switch reactionType {
-	case 2000:
-		return "❤️" // love
-	case 2001:
-		return "👍" // like
-	case 2002:
-		return "👎" // dislike
-	case 2003:
-		return "😂" // laugh
-	case 2004:
-		return "‼️" // emphasis
-	case 2005:
-		return "❓" // question
-	default:
-		return ""
-	}
-}
-
-// ReactionTextToEmoji extracts emoji from modern text-based reactions
-// e.g., "Loved "hello"" -> "❤️"
-func ReactionTextToEmoji(text string) string {
-	if len(text) == 0 {
-		return ""
-	}
-	switch {
-	case len(text) >= 5 && text[:5] == "Loved":
-		return "❤️"
-	case len(text) >= 5 && text[:5] == "Liked":
-		return "👍"
-	case len(text) >= 8 && text[:8] == "Disliked":
-		return "👎"
-	case len(text) >= 10 && text[:10] == "Laughed at":
-		return "😂"
-	case len(text) >= 10 && text[:10] == "Emphasized":
-		return "‼️"
-	case len(text) >= 10 && text[:10] == "Questioned":
-		return "❓"
-	default:
-		return ""
-	}
 }
