@@ -148,9 +148,11 @@ func groupMessagesIntoConversations(messages []MessageForConversation, gapThresh
 // getMessagesForConversations reads all messages grouped by chat_id
 func getMessagesForConversations(db *sql.DB) (map[int64][]MessageForConversation, error) {
 	query := `
-		SELECT id, chat_id, sender_id, timestamp
-		FROM messages
-		ORDER BY chat_id, timestamp
+		SELECT m.id, m.chat_id, c.id, m.timestamp
+		FROM messages m
+		JOIN chats ch ON m.chat_id = ch.id
+		LEFT JOIN contacts c ON m.sender_id = c.id
+		ORDER BY m.chat_id, m.timestamp
 	`
 
 	rows, err := db.Query(query)

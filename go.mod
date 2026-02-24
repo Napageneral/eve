@@ -18,4 +18,4 @@ require (
 
 replace github.com/Napageneral/taskengine => ../taskengine
 
-replace github.com/nexus-project/adapter-sdk-go => ../nexus/nexus-adapter-sdk-go
+replace github.com/nexus-project/adapter-sdk-go => ../nexus/nexus-adapter-sdks/nexus-adapter-sdk-go
