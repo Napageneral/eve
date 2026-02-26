@@ -254,6 +254,17 @@ func createTestWarehouseDBWithMessages(t *testing.T) *sql.DB {
 			is_me BOOLEAN DEFAULT 0
 		);
 
+		CREATE TABLE contact_identifiers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			contact_id INTEGER NOT NULL,
+			identifier TEXT NOT NULL,
+			type TEXT NOT NULL CHECK (type IN ('phone', 'email')),
+			is_primary BOOLEAN DEFAULT 0,
+			last_used TIMESTAMP,
+			UNIQUE(identifier, type),
+			FOREIGN KEY (contact_id) REFERENCES contacts(id)
+		);
+
 		CREATE TABLE chats (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			chat_identifier TEXT UNIQUE NOT NULL,
@@ -290,6 +301,8 @@ func createTestWarehouseDBWithMessages(t *testing.T) *sql.DB {
 		CREATE INDEX idx_messages_sender_id ON messages(sender_id);
 		CREATE INDEX idx_messages_timestamp ON messages(timestamp);
 		CREATE INDEX idx_messages_guid ON messages(guid);
+		CREATE INDEX idx_contact_identifiers_contact ON contact_identifiers(contact_id);
+		CREATE INDEX idx_contact_identifiers_identifier ON contact_identifiers(identifier);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -305,6 +318,32 @@ func createTestWarehouseDBWithMessages(t *testing.T) *sql.DB {
 	`)
 	if err != nil {
 		t.Fatalf("Failed to seed warehouse chats: %v", err)
+	}
+
+	// Seed contacts + normalized identifiers matching chat.db test handles:
+	//   +15551234567 -> 5551234567
+	//   alice@example.com -> alice@example.com
+	//   +15559876543 -> 5559876543
+	_, err = db.Exec(`
+		INSERT INTO contacts (id, name, data_source, is_me, last_updated)
+		VALUES
+			(1, '5551234567', 'chat.db', 0, CURRENT_TIMESTAMP),
+			(2, 'alice@example.com', 'chat.db', 0, CURRENT_TIMESTAMP),
+			(3, '5559876543', 'chat.db', 0, CURRENT_TIMESTAMP)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to seed warehouse contacts: %v", err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO contact_identifiers (contact_id, identifier, type, is_primary, last_used)
+		VALUES
+			(1, '5551234567', 'phone', 1, CURRENT_TIMESTAMP),
+			(2, 'alice@example.com', 'email', 1, CURRENT_TIMESTAMP),
+			(3, '5559876543', 'phone', 1, CURRENT_TIMESTAMP)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to seed warehouse contact_identifiers: %v", err)
 	}
 
 	return db

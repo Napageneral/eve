@@ -5,12 +5,12 @@
 //
 // Usage:
 //
-//	eve-adapter info
-//	eve-adapter monitor --account default
-//	eve-adapter send --account default --to "+14155551234" --text "Hello"
-//	eve-adapter backfill --account default --since 2026-01-01
-//	eve-adapter health --account default
-//	eve-adapter accounts list
+//	eve-adapter adapter.info
+//	eve-adapter adapter.monitor.start --account default
+//	eve-adapter delivery.send --account default --to "+14155551234" --text "Hello"
+//	eve-adapter event.backfill --account default --since 2026-01-01
+//	eve-adapter adapter.health --account default
+//	eve-adapter adapter.accounts.list
 package main
 
 import (
@@ -35,29 +35,65 @@ import (
 
 func main() {
 	nexadapter.Run(nexadapter.Adapter{
-		Info:     eveInfo,
-		Monitor:  eveMonitor,
-		Send:     eveSend,
-		Backfill: eveBackfill,
-		Health:   eveHealth,
-		Accounts: eveAccounts,
+		Operations: nexadapter.AdapterOperations{
+			AdapterInfo:         eveInfo,
+			AdapterMonitorStart: eveMonitor,
+			DeliverySend:        eveSend,
+			EventBackfill:       eveBackfill,
+			AdapterHealth:       eveHealth,
+			AdapterAccountsList: eveAccounts,
+			AdapterSetupStart:   eveSetupStart,
+			AdapterSetupSubmit:  eveSetupSubmit,
+			AdapterSetupStatus:  eveSetupStatus,
+			AdapterSetupCancel:  eveSetupCancel,
+		},
 	})
 }
 
 // ---------- Info ----------
 
-func eveInfo() *nexadapter.AdapterInfo {
+func eveInfo(_ context.Context) (*nexadapter.AdapterInfo, error) {
 	return &nexadapter.AdapterInfo{
 		Platform: "imessage",
 		Name:     "eve",
 		Version:  "1.0.0",
-		Supports: []nexadapter.Capability{
-			nexadapter.CapMonitor,
-			nexadapter.CapSend,
-			nexadapter.CapBackfill,
-			nexadapter.CapHealth,
+		Operations: []nexadapter.AdapterOperation{
+			nexadapter.OpAdapterInfo,
+			nexadapter.OpAdapterMonitorStart,
+			nexadapter.OpDeliverySend,
+			nexadapter.OpEventBackfill,
+			nexadapter.OpAdapterHealth,
+			nexadapter.OpAdapterAccountsList,
+			nexadapter.OpAdapterSetupStart,
+			nexadapter.OpAdapterSetupSubmit,
+			nexadapter.OpAdapterSetupStatus,
+			nexadapter.OpAdapterSetupCancel,
 		},
-		MultiAccount: false,
+		CredentialService: "eve",
+		MultiAccount:      false,
+		Auth: &nexadapter.AdapterAuthManifest{
+			Methods: []nexadapter.AdapterAuthMethod{
+				{
+					Type:    "custom_flow",
+					Label:   "Set Up Eve Local Access",
+					Icon:    "settings",
+					Service: "eve",
+					Fields: []nexadapter.AdapterAuthField{
+						{
+							Name:     "confirm_full_disk_access",
+							Label:    "I enabled Full Disk Access for Eve",
+							Type:     "select",
+							Required: true,
+							Options: []nexadapter.AdapterAuthFieldOption{
+								{Label: "Yes", Value: "yes"},
+								{Label: "Not yet", Value: "no"},
+							},
+						},
+					},
+				},
+			},
+			SetupGuide: "Grant Full Disk Access to Eve so it can read chat.db, then confirm setup.",
+		},
 		PlatformCapabilities: nexadapter.ChannelCapabilities{
 			TextLimit:             4000,
 			SupportsMarkdown:      false,
@@ -74,7 +110,7 @@ func eveInfo() *nexadapter.AdapterInfo {
 			SupportsVoiceNotes:    true,
 			SupportsStreamingEdit: false,
 		},
-	}
+	}, nil
 }
 
 // ---------- Monitor ----------
@@ -492,6 +528,139 @@ func eveAccounts(_ context.Context) ([]nexadapter.AdapterAccount, error) {
 			DisplayName: getFullName(),
 			Status:      "active",
 		},
+	}, nil
+}
+
+func eveSetupFields() []nexadapter.AdapterAuthField {
+	return []nexadapter.AdapterAuthField{
+		{
+			Name:     "confirm_full_disk_access",
+			Label:    "I enabled Full Disk Access for Eve",
+			Type:     "select",
+			Required: true,
+			Options: []nexadapter.AdapterAuthFieldOption{
+				{Label: "Yes", Value: "yes"},
+				{Label: "Not yet", Value: "no"},
+			},
+		},
+	}
+}
+
+func setupAccountOrDefault(account string) string {
+	trimmed := strings.TrimSpace(account)
+	if trimmed == "" {
+		return "default"
+	}
+	return trimmed
+}
+
+func setupSessionIDOrDefault(sessionID string) string {
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" {
+		return fmt.Sprintf("eve-setup-%d", time.Now().UnixNano())
+	}
+	return trimmed
+}
+
+func isEveSetupConfirmed(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+
+	normalize := func(raw any) bool {
+		switch value := raw.(type) {
+		case bool:
+			return value
+		case string:
+			v := strings.ToLower(strings.TrimSpace(value))
+			return v == "true" || v == "yes" || v == "y" || v == "1" || v == "confirmed"
+		case float64:
+			return value == 1
+		case int:
+			return value == 1
+		case int64:
+			return value == 1
+		default:
+			return false
+		}
+	}
+
+	return normalize(payload["confirm_full_disk_access"]) || normalize(payload["confirm"])
+}
+
+func buildEveSetupResult(ctx context.Context, req nexadapter.AdapterSetupRequest, requireConfirm bool) (*nexadapter.AdapterSetupResult, error) {
+	account := setupAccountOrDefault(req.Account)
+	sessionID := setupSessionIDOrDefault(req.SessionID)
+
+	health, err := eveHealth(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	if health.Connected {
+		return &nexadapter.AdapterSetupResult{
+			Status:    nexadapter.SetupStatusCompleted,
+			SessionID: sessionID,
+			Account:   account,
+			Service:   "eve",
+			Message:   "Eve can access chat.db and is ready.",
+			Metadata: map[string]any{
+				"connected":    true,
+				"health_error": health.Error,
+			},
+		}, nil
+	}
+
+	if requireConfirm && !isEveSetupConfirmed(req.Payload) {
+		return &nexadapter.AdapterSetupResult{
+			Status:       nexadapter.SetupStatusRequiresInput,
+			SessionID:    sessionID,
+			Account:      account,
+			Service:      "eve",
+			Message:      "Confirm Full Disk Access after enabling it in System Settings.",
+			Instructions: "System Settings -> Privacy & Security -> Full Disk Access -> enable access for Eve and your runtime shell, then submit again.",
+			Fields:       eveSetupFields(),
+			Metadata: map[string]any{
+				"connected":    false,
+				"health_error": health.Error,
+			},
+		}, nil
+	}
+
+	return &nexadapter.AdapterSetupResult{
+		Status:       nexadapter.SetupStatusRequiresInput,
+		SessionID:    sessionID,
+		Account:      account,
+		Service:      "eve",
+		Message:      "Eve still cannot read chat.db.",
+		Instructions: "Grant Full Disk Access to Eve and your runtime shell, then submit again.",
+		Fields:       eveSetupFields(),
+		Metadata: map[string]any{
+			"connected":    false,
+			"health_error": health.Error,
+			"details":      health.Details,
+		},
+	}, nil
+}
+
+func eveSetupStart(ctx context.Context, req nexadapter.AdapterSetupRequest) (*nexadapter.AdapterSetupResult, error) {
+	return buildEveSetupResult(ctx, req, false)
+}
+
+func eveSetupSubmit(ctx context.Context, req nexadapter.AdapterSetupRequest) (*nexadapter.AdapterSetupResult, error) {
+	return buildEveSetupResult(ctx, req, true)
+}
+
+func eveSetupStatus(ctx context.Context, req nexadapter.AdapterSetupRequest) (*nexadapter.AdapterSetupResult, error) {
+	return buildEveSetupResult(ctx, req, false)
+}
+
+func eveSetupCancel(_ context.Context, req nexadapter.AdapterSetupRequest) (*nexadapter.AdapterSetupResult, error) {
+	return &nexadapter.AdapterSetupResult{
+		Status:    nexadapter.SetupStatusCancelled,
+		SessionID: setupSessionIDOrDefault(req.SessionID),
+		Account:   setupAccountOrDefault(req.Account),
+		Service:   "eve",
+		Message:   "Setup cancelled.",
 	}, nil
 }
 

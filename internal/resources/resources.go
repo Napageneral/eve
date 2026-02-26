@@ -129,18 +129,89 @@ func (l *Loader) LoadPack(id string) (*Pack, error) {
 
 // walkFiles walks through files in the given base directory with the specified extension
 func (l *Loader) walkFiles(baseDir, extension string, fn func(path string, content []byte) error) error {
+	subdir := strings.TrimPrefix(baseDir, "embedded_")
+
 	// Try override directory first
 	if l.resourcesDir != "" {
-		// Map embedded_prompts -> prompts, embedded_packs -> packs for override directory
-		subdir := strings.TrimPrefix(baseDir, "embedded_")
 		overridePath := filepath.Join(l.resourcesDir, subdir)
 		if info, err := os.Stat(overridePath); err == nil && info.IsDir() {
 			return l.walkOSFiles(overridePath, baseDir, extension, fn)
 		}
 	}
 
+	// Prefer embedded resources when they contain files for this extension.
+	if hasEmbeddedFiles(baseDir, extension) {
+		return l.walkEmbeddedFiles(baseDir, extension, fn)
+	}
+
+	// In source/dev layouts, embedded folders may only contain placeholders.
+	// Fall back to repo resources when available.
+	if fallbackRoot := discoverFallbackResourcesRoot(); fallbackRoot != "" {
+		fallbackPath := filepath.Join(fallbackRoot, subdir)
+		if info, err := os.Stat(fallbackPath); err == nil && info.IsDir() {
+			return l.walkOSFiles(fallbackPath, baseDir, extension, fn)
+		}
+	}
+
 	// Fall back to embedded FS
 	return l.walkEmbeddedFiles(baseDir, extension, fn)
+}
+
+func hasEmbeddedFiles(baseDir, extension string) bool {
+	found := false
+	_ = fs.WalkDir(embeddedFS, baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(path, extension) {
+			return nil
+		}
+		found = true
+		return fs.SkipAll
+	})
+	return found
+}
+
+func discoverFallbackResourcesRoot() string {
+	candidates := make([]string, 0, 6)
+
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(
+			candidates,
+			filepath.Join(cwd, "resources"),
+			filepath.Join(cwd, "..", "resources"),
+			filepath.Join(cwd, "..", "..", "resources"),
+		)
+	}
+
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		candidates = append(
+			candidates,
+			filepath.Join(exeDir, "resources"),
+			filepath.Join(exeDir, "..", "resources"),
+			filepath.Join(exeDir, "..", "..", "resources"),
+		)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		root := filepath.Clean(candidate)
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		if dirExists(filepath.Join(root, "prompts")) && dirExists(filepath.Join(root, "packs")) {
+			return root
+		}
+	}
+
+	return ""
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // walkOSFiles walks files from the OS filesystem
@@ -232,31 +303,14 @@ func (l *Loader) ExportResources(targetDir string) (int, int, error) {
 		return 0, 0, fmt.Errorf("failed to create prompts dir: %w", err)
 	}
 
-	err := fs.WalkDir(embeddedFS, "embedded_prompts", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		// Read from embedded FS
-		content, err := embeddedFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		// Map embedded_prompts/... -> prompts/...
+	err := l.walkFiles("embedded_prompts", ".prompt.md", func(path string, content []byte) error {
 		relPath := strings.TrimPrefix(path, "embedded_prompts/")
 		targetPath := filepath.Join(promptsTargetDir, relPath)
 
-		// Create subdirectories if needed
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			return err
 		}
 
-		// Write file
 		if err := os.WriteFile(targetPath, content, 0644); err != nil {
 			return err
 		}
@@ -275,31 +329,14 @@ func (l *Loader) ExportResources(targetDir string) (int, int, error) {
 		return promptCount, packCount, fmt.Errorf("failed to create packs dir: %w", err)
 	}
 
-	err = fs.WalkDir(embeddedFS, "embedded_packs", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		// Read from embedded FS
-		content, err := embeddedFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		// Map embedded_packs/... -> packs/...
+	err = l.walkFiles("embedded_packs", ".pack.yaml", func(path string, content []byte) error {
 		relPath := strings.TrimPrefix(path, "embedded_packs/")
 		targetPath := filepath.Join(packsTargetDir, relPath)
 
-		// Create subdirectories if needed
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			return err
 		}
 
-		// Write file
 		if err := os.WriteFile(targetPath, content, 0644); err != nil {
 			return err
 		}
